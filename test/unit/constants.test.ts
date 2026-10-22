@@ -14,17 +14,16 @@ describe('constants', () => {
       expect(DEFAULT_TIME_PERIODS).toEqual([
         'day',
         '7d',
-        '14d',
         '30d',
-        'lastMonth',
-        'thisMonth',
+        'month',
+        '6mo',
         '12mo',
         'custom',
       ])
     })
 
-    it('should have 8 default time periods', () => {
-      expect(DEFAULT_TIME_PERIODS).toHaveLength(8)
+    it('should have 7 default time periods', () => {
+      expect(DEFAULT_TIME_PERIODS).toHaveLength(7)
     })
   })
 
@@ -41,10 +40,12 @@ describe('constants', () => {
       expect(TIME_PERIOD_LABELS['7d']).toBe('Last 7 days')
       expect(TIME_PERIOD_LABELS['14d']).toBe('Last 14 days')
       expect(TIME_PERIOD_LABELS['30d']).toBe('Last 30 days')
+      expect(TIME_PERIOD_LABELS.month).toBe('Month to date')
+      expect(TIME_PERIOD_LABELS['6mo']).toBe('Last 6 months')
       expect(TIME_PERIOD_LABELS.lastMonth).toBe('Last month')
       expect(TIME_PERIOD_LABELS.thisMonth).toBe('This month')
       expect(TIME_PERIOD_LABELS['12mo']).toBe('Last 12 months')
-      expect(TIME_PERIOD_LABELS.custom).toBe('Custom')
+      expect(TIME_PERIOD_LABELS.custom).toBe('Custom date')
     })
   })
 
@@ -60,9 +61,9 @@ describe('constants', () => {
     it('should map time periods correctly for each provider', () => {
       expect(PROVIDER_PERIOD_MAPPINGS.plausible['7d']).toBe('7d')
       expect(PROVIDER_PERIOD_MAPPINGS.umami['7d']).toBe('7d')
-      expect(PROVIDER_PERIOD_MAPPINGS.matomo['7d']).toBe('week')
+      expect(PROVIDER_PERIOD_MAPPINGS.matomo['7d']).toBe('range')
       expect(PROVIDER_PERIOD_MAPPINGS.posthog['7d']).toBe('7d')
-      expect(PROVIDER_PERIOD_MAPPINGS['google-analytics']['7d']).toBe('7d')
+      expect(PROVIDER_PERIOD_MAPPINGS['google-analytics']['7d']).toBe('7daysAgo')
     })
   })
 
@@ -91,9 +92,9 @@ describe('constants', () => {
   describe('mapTimePeriodToProvider', () => {
     it('should map time periods correctly', () => {
       expect(mapTimePeriodToProvider('7d', 'plausible')).toBe('7d')
-      expect(mapTimePeriodToProvider('7d', 'matomo')).toBe('week')
+      expect(mapTimePeriodToProvider('7d', 'matomo')).toBe('range')
       expect(mapTimePeriodToProvider('30d', 'umami')).toBe('30d')
-      expect(mapTimePeriodToProvider('lastMonth', 'google-analytics')).toBe('lastMonth')
+      expect(mapTimePeriodToProvider('lastMonth', 'google-analytics')).toBe('custom')
     })
 
     it('should pass through unknown periods', () => {

@@ -1,101 +1,69 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { PayloadRequest } from 'payload'
+import { analyticsEndpoint } from '@/endpoints/analytics'
+import { DEFAULT_TIME_PERIODS } from '@/constants'
+import type { AnalyticsGlobals, AnalyticsProvider } from '@/types'
 import { createMockDashboardData, createMockProvider } from '../utils/test-helpers'
 
-// Mock the endpoint handler by importing the logic
-const createAnalyticsEndpoint = () => {
-  return async (req: PayloadRequest) => {
-    try {
-      const provider = (global as any).__analyticsProvider
-      
-      if (!provider) {
-        return Response.json(
-          { error: 'Analytics provider not configured' },
-          { status: 500 }
-        )
-      }
+const analyticsGlobal = globalThis as typeof globalThis & AnalyticsGlobals
 
-      const period = req.url?.searchParams?.get('period') || '7d'
-      const data = await provider.getDashboardData(period)
+const DASHBOARD_URL = 'http://localhost:3000/api/analytics/dashboard'
 
-      if (!data) {
-        return Response.json(
-          { error: 'Failed to fetch analytics data' },
-          { status: 500 }
-        )
-      }
+// The endpoint only reads req.url, so a request carrying just the URL is enough
+const createRequest = (url: string): PayloadRequest => ({ url }) as PayloadRequest
 
-      return Response.json(data)
-    } catch (error) {
-      return Response.json(
-        { error: 'Internal server error' },
-        { status: 500 }
-      )
-    }
-  }
-}
+// createMockProvider falls back to default data when given null, so build this one by hand
+const createNullProvider = (): AnalyticsProvider => ({
+  name: 'null-provider',
+  getDashboardData: vi.fn().mockResolvedValue(null),
+})
 
 describe('Analytics API Endpoint', () => {
-  let handler: ReturnType<typeof createAnalyticsEndpoint>
-  let mockRequest: Partial<PayloadRequest>
+  let mockRequest: PayloadRequest
 
   beforeEach(() => {
     vi.clearAllMocks()
-    handler = createAnalyticsEndpoint()
-    
-    // Clear global state
-    if ('__analyticsProvider' in global) {
-      delete (global as any).__analyticsProvider
-    }
 
-    // Create mock request
-    mockRequest = {
-      url: new URL('http://localhost:3000/api/analytics/dashboard?period=7d'),
-      method: 'GET',
-      headers: new Headers({
-        'content-type': 'application/json',
-      }),
-    }
+    // Clear global state
+    delete analyticsGlobal.__analyticsProvider
+
+    mockRequest = createRequest(`${DASHBOARD_URL}?period=7d`)
   })
 
   describe('GET /api/analytics/dashboard', () => {
     it('should return analytics data when provider is configured', async () => {
       const mockData = createMockDashboardData()
       const mockProvider = createMockProvider('test', mockData)
-      ;(global as any).__analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = mockProvider
 
-      const response = await handler(mockRequest as PayloadRequest)
+      const response = await analyticsEndpoint(mockRequest)
       const data = await response.json()
 
       expect(response.status).toBe(200)
       expect(data).toEqual(mockData)
-      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('7d')
+      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('7d', undefined)
     })
 
     it('should use default period when not specified', async () => {
       const mockProvider = createMockProvider('test')
-      ;(global as any).analyticsProvider = mockProvider
-      
-      mockRequest.url = new URL('http://localhost:3000/api/analytics/dashboard')
+      analyticsGlobal.__analyticsProvider = mockProvider
 
-      await handler(mockRequest as PayloadRequest)
+      await analyticsEndpoint(createRequest(DASHBOARD_URL))
 
-      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('7d')
+      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('7d', undefined)
     })
 
     it('should pass custom period to provider', async () => {
       const mockProvider = createMockProvider('test')
-      ;(global as any).analyticsProvider = mockProvider
-      
-      mockRequest.url = new URL('http://localhost:3000/api/analytics/dashboard?period=30d')
+      analyticsGlobal.__analyticsProvider = mockProvider
 
-      await handler(mockRequest as PayloadRequest)
+      await analyticsEndpoint(createRequest(`${DASHBOARD_URL}?period=30d`))
 
-      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('30d')
+      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('30d', undefined)
     })
 
     it('should return 500 when provider is not configured', async () => {
-      const response = await handler(mockRequest as PayloadRequest)
+      const response = await analyticsEndpoint(mockRequest)
       const data = await response.json()
 
       expect(response.status).toBe(500)
@@ -103,10 +71,9 @@ describe('Analytics API Endpoint', () => {
     })
 
     it('should return 500 when provider returns null', async () => {
-      const mockProvider = createMockProvider('test', null)
-      ;(global as any).analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = createNullProvider()
 
-      const response = await handler(mockRequest as PayloadRequest)
+      const response = await analyticsEndpoint(mockRequest)
       const data = await response.json()
 
       expect(response.status).toBe(500)
@@ -114,45 +81,43 @@ describe('Analytics API Endpoint', () => {
     })
 
     it('should handle provider errors gracefully', async () => {
-      const mockProvider = {
+      const mockProvider: AnalyticsProvider = {
         name: 'error-provider',
         getDashboardData: vi.fn().mockRejectedValue(new Error('Provider error')),
       }
-      ;(global as any).analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = mockProvider
 
-      const response = await handler(mockRequest as PayloadRequest)
+      const response = await analyticsEndpoint(mockRequest)
       const data = await response.json()
 
       expect(response.status).toBe(500)
-      expect(data).toEqual({ error: 'Internal server error' })
+      expect(data).toEqual({ error: 'Failed to fetch analytics data' })
     })
 
     it('should handle multiple time period formats', async () => {
       const mockProvider = createMockProvider('test')
-      ;(global as any).analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = mockProvider
 
-      const periods = ['day', '7d', '14d', '30d', 'lastMonth', 'thisMonth', '12mo']
+      // 'custom' without start and end is passed through unchanged, like any other period
+      for (const period of DEFAULT_TIME_PERIODS) {
+        await analyticsEndpoint(createRequest(`${DASHBOARD_URL}?period=${period}`))
 
-      for (const period of periods) {
-        mockRequest.url = new URL(`http://localhost:3000/api/analytics/dashboard?period=${period}`)
-        await handler(mockRequest as PayloadRequest)
-        
-        expect(mockProvider.getDashboardData).toHaveBeenCalledWith(period)
+        expect(mockProvider.getDashboardData).toHaveBeenCalledWith(period, undefined)
       }
     })
 
     it('should cache responses appropriately', async () => {
       const mockData = createMockDashboardData()
       const mockProvider = createMockProvider('test', mockData)
-      ;(global as any).analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = mockProvider
 
       // Make multiple requests with same period
-      const response1 = await handler(mockRequest as PayloadRequest)
-      const response2 = await handler(mockRequest as PayloadRequest)
+      const response1 = await analyticsEndpoint(mockRequest)
+      const response2 = await analyticsEndpoint(mockRequest)
 
       // Provider should be called twice (no caching in endpoint)
       expect(mockProvider.getDashboardData).toHaveBeenCalledTimes(2)
-      
+
       // Both responses should be successful
       expect(response1.status).toBe(200)
       expect(response2.status).toBe(200)
@@ -160,23 +125,21 @@ describe('Analytics API Endpoint', () => {
 
     it('should validate period parameter format', async () => {
       const mockProvider = createMockProvider('test')
-      ;(global as any).analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = mockProvider
 
       // Test with invalid period (should still work as provider handles validation)
-      mockRequest.url = new URL('http://localhost:3000/api/analytics/dashboard?period=invalid')
-      
-      const response = await handler(mockRequest as PayloadRequest)
-      
+      const response = await analyticsEndpoint(createRequest(`${DASHBOARD_URL}?period=invalid`))
+
       expect(response.status).toBe(200)
-      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('invalid')
+      expect(mockProvider.getDashboardData).toHaveBeenCalledWith('invalid', undefined)
     })
 
     it('should return consistent data structure', async () => {
       const mockData = createMockDashboardData()
       const mockProvider = createMockProvider('test', mockData)
-      ;(global as any).analyticsProvider = mockProvider
+      analyticsGlobal.__analyticsProvider = mockProvider
 
-      const response = await handler(mockRequest as PayloadRequest)
+      const response = await analyticsEndpoint(mockRequest)
       const data = await response.json()
 
       // Verify data structure
@@ -187,15 +150,12 @@ describe('Analytics API Endpoint', () => {
       expect(data).toHaveProperty('events')
       expect(data).toHaveProperty('realtime')
 
-      // Verify stats structure
-      expect(data.stats).toHaveProperty('visitors')
-      expect(data.stats).toHaveProperty('pageviews')
-      expect(data.stats).toHaveProperty('bounceRate')
-      expect(data.stats).toHaveProperty('avgDuration')
-      expect(data.stats).toHaveProperty('visitorsChange')
-      expect(data.stats).toHaveProperty('pageviewsChange')
-      expect(data.stats).toHaveProperty('bounceRateChange')
-      expect(data.stats).toHaveProperty('avgDurationChange')
+      // Verify stats structure: each metric carries its value and its change
+      for (const metric of ['visitors', 'pageviews', 'bounce_rate', 'visit_duration']) {
+        expect(data.stats).toHaveProperty(metric)
+        expect(data.stats[metric]).toHaveProperty('value')
+        expect(data.stats[metric]).toHaveProperty('change')
+      }
     })
   })
 })

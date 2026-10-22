@@ -1,54 +1,140 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { PostHogProvider } from '@/providers/posthog'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createPostHogProvider } from '@/providers/posthog'
+import type { AnalyticsProvider } from '@/types'
 import { mockFetchResponse } from '../../utils/test-helpers'
-import { posthogEventsResponse, posthogInsightsResponse } from '../../fixtures/api-responses'
 
-describe('PostHogProvider', () => {
-  let provider: PostHogProvider
+const NOW = new Date('2024-01-10T12:00:00Z')
+
+// Fixtures in the shape the current provider reads: PostHog trend results
+// carry `results[].count`, `results[].data` and `results[].labels`.
+const trend = (count: number, data: number[] = [], labels: string[] = []) => ({
+  results: [{ label: '$pageview', count, data, labels }],
+})
+
+interface PostHogRoutes {
+  pageviews?: unknown
+  visitors?: unknown
+  prevPageviews?: unknown
+  prevVisitors?: unknown
+  paths?: unknown
+  referrers?: unknown
+  events?: unknown
+}
+
+const emptyResults = { results: [] }
+
+// Answers each PostHog request by what it asks for, not by call order.
+// A previous-period request is one whose date_to is not "now".
+function routePostHog(routes: PostHogRoutes) {
+  return (input: RequestInfo | URL): Promise<Response> => {
+    const url = new URL(String(input))
+    const params = url.searchParams
+    const isPrevious = params.get('date_to') !== NOW.toISOString()
+    let body: unknown = emptyResults
+
+    if (url.pathname.endsWith('/insights/path/')) {
+      body = routes.paths ?? emptyResults
+    } else if (url.pathname.endsWith('/events/')) {
+      body = routes.events ?? emptyResults
+    } else if (url.pathname.endsWith('/insights/trend/')) {
+      if (params.get('breakdown') === '$referrer') {
+        body = routes.referrers ?? emptyResults
+      } else if (params.get('events')?.includes('"dau"')) {
+        body = (isPrevious ? routes.prevVisitors : routes.visitors) ?? emptyResults
+      } else {
+        body = (isPrevious ? routes.prevPageviews : routes.pageviews) ?? emptyResults
+      }
+    }
+
+    return mockFetchResponse(body)
+  }
+}
+
+describe('createPostHogProvider', () => {
+  let provider: AnalyticsProvider
+  let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>
+
+  const requestedUrls = () => fetchMock.mock.calls.map(([input]) => new URL(String(input)))
 
   beforeEach(() => {
     vi.clearAllMocks()
-    global.fetch = vi.fn()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+    fetchMock = vi.fn<typeof fetch>()
+    global.fetch = fetchMock
   })
 
-  describe('constructor', () => {
-    it('should initialize with provided config', () => {
-      provider = new PostHogProvider({
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  describe('creation', () => {
+    it('should initialize with provided config', async () => {
+      provider = createPostHogProvider({
         apiKey: 'test-api-key',
         projectId: 'test-project-id',
-        apiHost: 'https://app.posthog.com',
+        apiHost: 'https://posthog.example.com',
       })
+      fetchMock.mockImplementation(routePostHog({}))
+
+      await provider.getDashboardData('7d')
 
       expect(provider.name).toBe('posthog')
+      const [url] = requestedUrls()
+      expect(url.origin).toBe('https://posthog.example.com')
+      expect(url.pathname.startsWith('/api/projects/test-project-id/')).toBe(true)
     })
 
-    it('should use environment variables when config is not provided', () => {
+    it('should use environment variables when config is not provided', async () => {
       process.env.POSTHOG_API_KEY = 'env-api-key'
       process.env.POSTHOG_PROJECT_ID = 'env-project-id'
       process.env.POSTHOG_API_HOST = 'https://env.posthog.com'
 
-      provider = new PostHogProvider({})
+      try {
+        provider = createPostHogProvider({})
+        fetchMock.mockImplementation(routePostHog({}))
 
-      expect(provider.name).toBe('posthog')
+        await provider.getDashboardData('7d')
 
-      delete process.env.POSTHOG_API_KEY
-      delete process.env.POSTHOG_PROJECT_ID
-      delete process.env.POSTHOG_API_HOST
+        expect(provider.name).toBe('posthog')
+        const [url] = requestedUrls()
+        expect(url.origin).toBe('https://env.posthog.com')
+        expect(url.pathname.startsWith('/api/projects/env-project-id/')).toBe(true)
+        const init = fetchMock.mock.calls[0][1]
+        expect(init?.headers).toMatchObject({ Authorization: 'Bearer env-api-key' })
+      } finally {
+        delete process.env.POSTHOG_API_KEY
+        delete process.env.POSTHOG_PROJECT_ID
+        delete process.env.POSTHOG_API_HOST
+      }
     })
 
-    it('should use default API host if not provided', () => {
-      provider = new PostHogProvider({
+    it('should use default API host if not provided', async () => {
+      provider = createPostHogProvider({
         apiKey: 'test-api-key',
         projectId: 'test-project-id',
       })
+      fetchMock.mockImplementation(routePostHog({}))
+
+      await provider.getDashboardData('7d')
 
       expect(provider.name).toBe('posthog')
+      expect(requestedUrls()[0].origin).toBe('https://app.posthog.com')
+    })
+
+    it('should return null without calling the API when credentials are missing', async () => {
+      provider = createPostHogProvider({})
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result).toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
     })
   })
 
   describe('getDashboardData', () => {
     beforeEach(() => {
-      provider = new PostHogProvider({
+      provider = createPostHogProvider({
         apiKey: 'test-api-key',
         projectId: 'test-project-id',
         apiHost: 'https://app.posthog.com',
@@ -56,187 +142,149 @@ describe('PostHogProvider', () => {
     })
 
     it('should fetch and transform data correctly', async () => {
-      const mockDate = new Date('2024-01-10T12:00:00Z')
-      vi.setSystemTime(mockDate)
-
-      // Mock API responses
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse(posthogEventsResponse)) // events
-        .mockResolvedValueOnce(mockFetchResponse({ // previous period events
-          results: [
-            {
-              event: '$pageview',
-              properties: { $current_url: '/' },
-              timestamp: '2024-01-01T00:00:00Z',
-              distinct_id: 'user1',
-            },
-            {
-              event: '$pageview',
-              properties: { $current_url: '/about' },
-              timestamp: '2024-01-01T00:01:00Z',
-              distinct_id: 'user1',
-            },
-          ],
-        }))
-        .mockResolvedValueOnce(mockFetchResponse(posthogInsightsResponse)) // insights
+      fetchMock.mockImplementation(
+        routePostHog({
+          pageviews: trend(330, [100, 120, 110], ['2024-01-08', '2024-01-09', '2024-01-10']),
+          visitors: trend(30, [10, 12, 8], ['2024-01-08', '2024-01-09', '2024-01-10']),
+          prevPageviews: trend(330),
+          prevVisitors: trend(10),
+          paths: { results: [{ path: '/', count: 20 }, { path: '/about', count: 5 }] },
+          referrers: { results: [{ label: 'google.com', count: 18 }, { label: '', count: 12 }] },
+          events: { results: [{ event: 'Signup', count: 3 }] },
+        })
+      )
 
       const result = await provider.getDashboardData('7d')
 
-      expect(result).toBeDefined()
-      
-      // Check stats calculation
-      expect(result?.stats.visitors).toBe(3) // 3 unique users
-      expect(result?.stats.pageviews).toBe(2) // 2 pageview events
-      expect(result?.stats.bounceRate).toBeCloseTo(33.33, 1) // 1 user with single pageview / 3 total
-      expect(result?.stats.avgDuration).toBe(180) // default estimate
-      
-      // Check comparisons
-      expect(result?.stats.visitorsChange).toBe(200) // (3-1)/1 * 100
-      expect(result?.stats.pageviewsChange).toBe(0) // (2-2)/2 * 100
+      expect(result).not.toBeNull()
 
-      // Check pages
+      // Stats: totals come from the trend counts, changes from the previous period
+      expect(result?.stats?.visitors).toEqual({ value: 30, change: 200 }) // (30-10)/10 * 100
+      expect(result?.stats?.pageviews).toEqual({ value: 330, change: 0 }) // (330-330)/330 * 100
+      expect(result?.stats?.bounce_rate).toEqual({ value: 45, change: null })
+      expect(result?.stats?.visit_duration).toEqual({ value: 120, change: null })
+
+      // Pages
       expect(result?.pages).toHaveLength(2)
-      expect(result?.pages[0]).toEqual({
-        path: '/',
-        title: '/',
-        visitors: 1,
-        pageviews: 1,
-        bounceRate: 0,
-        avgDuration: 180,
+      expect(result?.pages?.[0]).toEqual({
+        page: '/',
+        visitors: 20,
+        pageviews: 20,
+        bounce_rate: 45,
+        visit_duration: 120,
       })
 
-      // Check sources
-      expect(result?.sources).toHaveLength(1)
-      expect(result?.sources[0]).toEqual({
-        source: 'Direct',
-        visitors: 3,
-        percentage: 100,
-      })
+      // Sources
+      expect(result?.sources).toEqual([
+        { source: 'google.com', visitors: 18, bounce_rate: 45, visit_duration: 120 },
+        { source: 'Direct', visitors: 12, bounce_rate: 45, visit_duration: 120 },
+      ])
 
-      // Check events
-      expect(result?.events).toHaveLength(1)
-      expect(result?.events[0]).toEqual({
-        name: 'Signup',
-        count: 1,
-        change: 0,
-      })
+      // Events: conversion rate is event count over current visitors
+      expect(result?.events).toEqual([
+        { goal: 'Signup', visitors: 3, events: 3, conversion_rate: 10 },
+      ])
 
-      // Check timeseries
-      expect(result?.timeseries).toHaveLength(3)
+      // Timeseries pairs pageview and visitor data by label
+      expect(result?.timeseries).toEqual([
+        { date: '2024-01-08', visitors: 10, pageviews: 100 },
+        { date: '2024-01-09', visitors: 12, pageviews: 120 },
+        { date: '2024-01-10', visitors: 8, pageviews: 110 },
+      ])
+
+      expect(result?.realtime).toEqual({ visitors: 0 })
     })
 
-    it('should handle empty events response', async () => {
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse({ results: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ results: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ result: [] }))
+    it('should report a null change when the previous period has no data', async () => {
+      fetchMock.mockImplementation(
+        routePostHog({
+          pageviews: trend(50),
+          visitors: trend(20),
+          prevPageviews: trend(0),
+          prevVisitors: emptyResults,
+        })
+      )
 
       const result = await provider.getDashboardData('7d')
 
-      expect(result).toBeDefined()
-      expect(result?.stats.visitors).toBe(0)
-      expect(result?.stats.pageviews).toBe(0)
+      expect(result?.stats?.visitors).toEqual({ value: 20, change: null })
+      expect(result?.stats?.pageviews).toEqual({ value: 50, change: null })
+    })
+
+    it('should handle empty results responses', async () => {
+      fetchMock.mockImplementation(routePostHog({}))
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result).not.toBeNull()
+      expect(result?.stats?.visitors.value).toBe(0)
+      expect(result?.stats?.pageviews.value).toBe(0)
+      expect(result?.timeseries).toEqual([])
       expect(result?.pages).toEqual([])
+      expect(result?.sources).toEqual([])
       expect(result?.events).toEqual([])
     })
 
-    it('should calculate bounce rate correctly', async () => {
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse({
-          results: [
-            // User 1: 2 pageviews (not a bounce)
-            {
-              event: '$pageview',
-              properties: { $current_url: '/' },
-              distinct_id: 'user1',
-            },
-            {
-              event: '$pageview',
-              properties: { $current_url: '/about' },
-              distinct_id: 'user1',
-            },
-            // User 2: 1 pageview (bounce)
-            {
-              event: '$pageview',
-              properties: { $current_url: '/' },
-              distinct_id: 'user2',
-            },
-            // User 3: 3 pageviews (not a bounce)
-            {
-              event: '$pageview',
-              properties: { $current_url: '/' },
-              distinct_id: 'user3',
-            },
-            {
-              event: '$pageview',
-              properties: { $current_url: '/contact' },
-              distinct_id: 'user3',
-            },
-            {
-              event: '$pageview',
-              properties: { $current_url: '/about' },
-              distinct_id: 'user3',
-            },
-          ],
-        }))
-        .mockResolvedValue(mockFetchResponse({ results: [] }))
+    it('should return null when the trend responses fail validation', async () => {
+      fetchMock.mockImplementation(() => mockFetchResponse({ result: [] }))
 
       const result = await provider.getDashboardData('7d')
 
-      // 1 bounce out of 3 users = 33.33%
-      expect(result?.stats.bounceRate).toBeCloseTo(33.33, 1)
+      expect(result).toBeNull()
     })
 
-    it('should extract sources from UTM parameters', async () => {
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse({
-          results: [
-            {
-              event: '$pageview',
-              properties: { 
-                $current_url: '/',
-                utm_source: 'google',
-              },
-              distinct_id: 'user1',
-            },
-            {
-              event: '$pageview',
-              properties: { 
-                $current_url: '/about',
-                utm_source: 'twitter',
-              },
-              distinct_id: 'user2',
-            },
-            {
-              event: '$pageview',
-              properties: { 
-                $current_url: '/contact',
-                $referring_domain: 'facebook.com',
-              },
-              distinct_id: 'user3',
-            },
-            {
-              event: '$pageview',
-              properties: { 
-                $current_url: '/home',
-              },
-              distinct_id: 'user4',
-            },
-          ],
-        }))
-        .mockResolvedValue(mockFetchResponse({ results: [] }))
+    it('should report placeholder bounce rate and visit duration', async () => {
+      // PostHog has no bounce rate or duration endpoint; the provider reports fixed placeholders
+      fetchMock.mockImplementation(
+        routePostHog({ pageviews: trend(6), visitors: trend(3) })
+      )
 
       const result = await provider.getDashboardData('7d')
 
+      expect(result?.stats?.bounce_rate).toEqual({ value: 45, change: null })
+      expect(result?.stats?.visit_duration).toEqual({ value: 120, change: null })
+    })
+
+    it('should extract sources from the referrer breakdown', async () => {
+      fetchMock.mockImplementation(
+        routePostHog({
+          pageviews: trend(4),
+          visitors: trend(4),
+          referrers: {
+            results: [
+              { label: 'google', count: 1 },
+              { label: 'twitter', count: 1 },
+              { label: 'facebook.com', count: 1 },
+              { count: 1 },
+            ],
+          },
+        })
+      )
+
+      const result = await provider.getDashboardData('7d')
+
+      const breakdownCall = requestedUrls().find(
+        (url) => url.searchParams.get('breakdown') === '$referrer'
+      )
+      expect(breakdownCall?.searchParams.get('breakdown_type')).toBe('event')
+
       expect(result?.sources).toHaveLength(4)
-      expect(result?.sources.find(s => s.source === 'google')).toBeDefined()
-      expect(result?.sources.find(s => s.source === 'twitter')).toBeDefined()
-      expect(result?.sources.find(s => s.source === 'facebook.com')).toBeDefined()
-      expect(result?.sources.find(s => s.source === 'Direct')).toBeDefined()
+      expect(result?.sources?.find((s) => s.source === 'google')).toBeDefined()
+      expect(result?.sources?.find((s) => s.source === 'twitter')).toBeDefined()
+      expect(result?.sources?.find((s) => s.source === 'facebook.com')).toBeDefined()
+      expect(result?.sources?.find((s) => s.source === 'Direct')).toBeDefined()
     })
 
     it('should handle API errors gracefully', async () => {
-      ;(global.fetch as any).mockRejectedValueOnce(new Error('Network error'))
+      fetchMock.mockRejectedValue(new Error('Network error'))
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result).toBeNull()
+    })
+
+    it('should return null when the API responds with an error status', async () => {
+      fetchMock.mockImplementation(() => mockFetchResponse({}, 500))
 
       const result = await provider.getDashboardData('7d')
 
@@ -244,39 +292,71 @@ describe('PostHogProvider', () => {
     })
 
     it('should send correct authorization headers', async () => {
-      ;(global.fetch as any).mockResolvedValue(mockFetchResponse({ results: [] }))
+      fetchMock.mockImplementation(routePostHog({}))
 
       await provider.getDashboardData('7d')
 
-      const calls = (global.fetch as any).mock.calls
-      expect(calls[0][1].headers['Authorization']).toBe('Bearer test-api-key')
+      expect(fetchMock).toHaveBeenCalledTimes(7)
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(init?.headers).toMatchObject({
+          Authorization: 'Bearer test-api-key',
+          'Content-Type': 'application/json',
+        })
+      }
     })
 
     it('should calculate date ranges correctly', async () => {
-      const mockDate = new Date('2024-01-10T12:00:00Z')
-      vi.setSystemTime(mockDate)
-      
-      ;(global.fetch as any).mockResolvedValue(mockFetchResponse({ results: [] }))
+      fetchMock.mockImplementation(routePostHog({}))
 
       await provider.getDashboardData('30d')
 
-      const calls = (global.fetch as any).mock.calls
-      const url = new URL(calls[0][0])
-      const params = url.searchParams
-      
-      expect(params.get('after')).toBe('2023-12-11T12:00:00.000Z')
-      expect(params.get('before')).toBe('2024-01-10T12:00:00.000Z')
+      const ranges = requestedUrls().map((url) => [
+        url.searchParams.get('date_from'),
+        url.searchParams.get('date_to'),
+      ])
+
+      // Current period
+      expect(ranges[0]).toEqual(['2023-12-11T12:00:00.000Z', '2024-01-10T12:00:00.000Z'])
+      expect(requestedUrls()[0].searchParams.get('interval')).toBe('day')
+      // Previous period ends where the current one starts
+      expect(ranges).toContainEqual(['2023-11-11T12:00:00.000Z', '2023-12-11T12:00:00.000Z'])
+    })
+
+    it('should use hourly intervals for the day period', async () => {
+      fetchMock.mockImplementation(routePostHog({}))
+
+      await provider.getDashboardData('day')
+
+      const [url] = requestedUrls()
+      expect(url.searchParams.get('date_from')).toBe('2024-01-09T12:00:00.000Z')
+      expect(url.searchParams.get('interval')).toBe('hour')
+    })
+
+    it('should fall back to 7 days for an unknown period', async () => {
+      fetchMock.mockImplementation(routePostHog({}))
+
+      await provider.getDashboardData('unknown')
+
+      const [url] = requestedUrls()
+      expect(url.searchParams.get('date_from')).toBe('2024-01-03T12:00:00.000Z')
+      expect(url.searchParams.get('interval')).toBe('day')
     })
   })
 
   describe('trackEvent', () => {
-    it('should not implement event tracking', () => {
-      provider = new PostHogProvider({
+    it('should be a server-side placeholder that makes no API call', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      provider = createPostHogProvider({
         apiKey: 'test-api-key',
         projectId: 'test-project-id',
       })
 
-      expect(provider.trackEvent).toBeUndefined()
+      provider.trackEvent?.('Signup', { plan: 'pro' })
+
+      expect(provider.trackEvent).toBeTypeOf('function')
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(logSpy).toHaveBeenCalledWith('PostHog trackEvent:', 'Signup', { plan: 'pro' })
+      logSpy.mockRestore()
     })
   })
 })

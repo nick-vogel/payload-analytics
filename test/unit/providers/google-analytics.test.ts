@@ -1,19 +1,128 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { GoogleAnalyticsProvider } from '@/providers/google-analytics'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createGoogleAnalyticsProvider } from '@/providers/google-analytics'
 import { mockFetchResponse } from '../../utils/test-helpers'
-import { googleAnalyticsReportResponse, googleAnalyticsPagePathResponse } from '../../fixtures/api-responses'
 
-describe('GoogleAnalyticsProvider', () => {
-  let provider: GoogleAnalyticsProvider
+interface ReportRequest {
+  dateRanges?: Array<{ startDate: string; endDate: string }>
+  dimensions?: Array<{ name: string }>
+  metrics?: Array<{ name: string }>
+  orderBys?: unknown[]
+  dimensionFilter?: unknown
+  limit?: number
+}
 
+const metric = (name: string, type: string) => ({ name, type })
+
+// One overview report with two date ranges: row 0 is the current period, row 1 the previous.
+const overviewReport = {
+  dimensionHeaders: [{ name: 'dateRange' }],
+  metricHeaders: [
+    metric('activeUsers', 'TYPE_INTEGER'),
+    metric('screenPageViews', 'TYPE_INTEGER'),
+    metric('bounceRate', 'TYPE_FLOAT'),
+    metric('averageSessionDuration', 'TYPE_SECONDS'),
+  ],
+  rows: [
+    {
+      dimensionValues: [{ value: 'date_range_0' }],
+      metricValues: [{ value: '1234' }, { value: '5678' }, { value: '0.452' }, { value: '180' }],
+    },
+    {
+      dimensionValues: [{ value: 'date_range_1' }],
+      metricValues: [{ value: '1000' }, { value: '5000' }, { value: '0.5' }, { value: '150' }],
+    },
+  ],
+}
+
+const timeseriesReport = {
+  rows: [
+    { dimensionValues: [{ value: '20240108' }], metricValues: [{ value: '100' }, { value: '250' }] },
+    { dimensionValues: [{ value: '20240109' }], metricValues: [{ value: '120' }, { value: '300' }] },
+    { dimensionValues: [{ value: '20240110' }], metricValues: [{ value: '110' }, { value: '280' }] },
+  ],
+}
+
+const pagesReport = {
+  rows: [
+    { dimensionValues: [{ value: '/' }], metricValues: [{ value: '500' }, { value: '1200' }, { value: '0.35' }, { value: '240' }] },
+    { dimensionValues: [{ value: '/about' }], metricValues: [{ value: '300' }, { value: '450' }, { value: '0.55' }, { value: '120' }] },
+  ],
+}
+
+const sourcesReport = {
+  rows: [
+    { dimensionValues: [{ value: 'google' }], metricValues: [{ value: '400' }, { value: '0.4' }, { value: '200' }] },
+    { dimensionValues: [{ value: '(direct)' }], metricValues: [{ value: '350' }, { value: '0.5' }, { value: '150' }] },
+    { dimensionValues: [{ value: 'twitter.com' }], metricValues: [{ value: '200' }, { value: '0.6' }, { value: '90' }] },
+  ],
+}
+
+const eventsReport = {
+  rows: [
+    { dimensionValues: [{ value: 'sign_up' }], metricValues: [{ value: '50' }, { value: '45' }] },
+    { dimensionValues: [{ value: 'purchase' }], metricValues: [{ value: '25' }, { value: '23' }] },
+  ],
+}
+
+const realtimeReport = {
+  rows: [{ dimensionValues: [], metricValues: [{ value: '7' }] }],
+}
+
+const fetchMock = vi.fn<typeof fetch>()
+
+const bodyOf = (call: Parameters<typeof fetch>): ReportRequest => JSON.parse(String(call[1]?.body))
+
+type ReportKind = 'overview' | 'timeseries' | 'pages' | 'sources' | 'events' | 'realtime'
+
+const kindOf = (url: string, body: ReportRequest): ReportKind => {
+  if (url.includes(':runRealtimeReport')) return 'realtime'
+  switch (body.dimensions?.[0]?.name) {
+    case 'date':
+      return 'timeseries'
+    case 'pagePath':
+      return 'pages'
+    case 'sessionSource':
+      return 'sources'
+    case 'eventName':
+      return 'events'
+    default:
+      return 'overview'
+  }
+}
+
+const callFor = (kind: ReportKind) =>
+  fetchMock.mock.calls.find((call) => kindOf(String(call[0]), bodyOf(call)) === kind)
+
+/** Answer each GA4 report request by what it asks for, not by call order. */
+const routeGA4 = (responses: Partial<Record<ReportKind, unknown>>) => {
+  fetchMock.mockImplementation((input, init) => {
+    const kind = kindOf(String(input), JSON.parse(String(init?.body)))
+    return mockFetchResponse(responses[kind] ?? { rows: [] })
+  })
+}
+
+const allReports = {
+  overview: overviewReport,
+  timeseries: timeseriesReport,
+  pages: pagesReport,
+  sources: sourcesReport,
+  events: eventsReport,
+  realtime: realtimeReport,
+}
+
+describe('createGoogleAnalyticsProvider', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    global.fetch = vi.fn()
+    fetchMock.mockReset()
+    global.fetch = fetchMock
   })
 
-  describe('constructor', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  describe('configuration', () => {
     it('should initialize with provided config', () => {
-      provider = new GoogleAnalyticsProvider({
+      const provider = createGoogleAnalyticsProvider({
         propertyId: '123456789',
         apiKey: 'test-api-key',
       })
@@ -21,231 +130,207 @@ describe('GoogleAnalyticsProvider', () => {
       expect(provider.name).toBe('google-analytics')
     })
 
-    it('should use environment variables when config is not provided', () => {
-      process.env.GA4_PROPERTY_ID = '987654321'
-      process.env.GA4_API_KEY = 'env-api-key'
+    it('should use environment variables when config is not provided', async () => {
+      vi.stubEnv('GA4_PROPERTY_ID', '987654321')
+      vi.stubEnv('GA4_API_KEY', 'env-api-key')
+      routeGA4(allReports)
 
-      provider = new GoogleAnalyticsProvider({})
+      const provider = createGoogleAnalyticsProvider({})
+      await provider.getDashboardData('7d')
 
-      expect(provider.name).toBe('google-analytics')
+      const call = callFor('overview')
+      expect(String(call?.[0])).toBe(
+        'https://analyticsdata.googleapis.com/v1beta/properties/987654321:runReport?key=env-api-key',
+      )
+    })
 
-      delete process.env.GA4_PROPERTY_ID
-      delete process.env.GA4_API_KEY
+    it('should return null without calling the API when credentials are missing', async () => {
+      vi.stubEnv('GA4_PROPERTY_ID', '')
+      vi.stubEnv('GA4_API_KEY', '')
+
+      const provider = createGoogleAnalyticsProvider()
+      const result = await provider.getDashboardData('7d')
+
+      expect(result).toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
     })
   })
 
   describe('getDashboardData', () => {
-    beforeEach(() => {
-      provider = new GoogleAnalyticsProvider({
-        propertyId: '123456789',
-        apiKey: 'test-api-key',
-      })
+    const provider = createGoogleAnalyticsProvider({
+      propertyId: '123456789',
+      apiKey: 'test-api-key',
     })
 
     it('should fetch and transform data correctly', async () => {
-      const mockDate = new Date('2024-01-10T12:00:00Z')
-      vi.setSystemTime(mockDate)
-
-      // Mock API responses
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse(googleAnalyticsReportResponse)) // current stats
-        .mockResolvedValueOnce(mockFetchResponse({ // comparison stats
-          rows: [
-            {
-              dimensionValues: [{ value: '20240103' }],
-              metricValues: [
-                { value: '1000' },
-                { value: '5000' },
-                { value: '0.5' },
-                { value: '150' },
-              ],
-            },
-          ],
-        }))
-        .mockResolvedValueOnce(mockFetchResponse({ // timeseries
-          rows: [
-            {
-              dimensionValues: [{ value: '20240108' }],
-              metricValues: [{ value: '100' }, { value: '250' }],
-            },
-            {
-              dimensionValues: [{ value: '20240109' }],
-              metricValues: [{ value: '120' }, { value: '300' }],
-            },
-            {
-              dimensionValues: [{ value: '20240110' }],
-              metricValues: [{ value: '110' }, { value: '280' }],
-            },
-          ],
-        }))
-        .mockResolvedValueOnce(mockFetchResponse(googleAnalyticsPagePathResponse)) // pages
-        .mockResolvedValueOnce(mockFetchResponse({ // sources
-          rows: [
-            {
-              dimensionValues: [{ value: 'google' }],
-              metricValues: [{ value: '400' }],
-            },
-            {
-              dimensionValues: [{ value: '(direct)' }],
-              metricValues: [{ value: '350' }],
-            },
-            {
-              dimensionValues: [{ value: 'twitter.com' }],
-              metricValues: [{ value: '200' }],
-            },
-          ],
-        }))
-        .mockResolvedValueOnce(mockFetchResponse({ // events
-          rows: [
-            {
-              dimensionValues: [{ value: 'sign_up' }],
-              metricValues: [{ value: '45' }],
-            },
-            {
-              dimensionValues: [{ value: 'purchase' }],
-              metricValues: [{ value: '23' }],
-            },
-          ],
-        }))
+      routeGA4(allReports)
 
       const result = await provider.getDashboardData('7d')
 
-      expect(result).toBeDefined()
-      expect(result?.stats).toEqual({
-        visitors: 1234,
-        pageviews: 5678,
-        bounceRate: 45.2,
-        avgDuration: 180,
-        visitorsChange: 23.4, // (1234-1000)/1000 * 100
-        pageviewsChange: 13.56, // (5678-5000)/5000 * 100
-        bounceRateChange: -9.6, // (0.452-0.5)/0.5 * 100
-        avgDurationChange: 20, // (180-150)/150 * 100
-      })
+      expect(result).not.toBeNull()
+      expect(result?.stats?.visitors.value).toBe(1234)
+      expect(result?.stats?.visitors.change).toBeCloseTo(23.4, 5) // (1234-1000)/1000 * 100
+      expect(result?.stats?.pageviews.value).toBe(5678)
+      expect(result?.stats?.pageviews.change).toBeCloseTo(13.56, 5) // (5678-5000)/5000 * 100
+      expect(result?.stats?.bounce_rate.value).toBeCloseTo(45.2, 5)
+      expect(result?.stats?.bounce_rate.change).toBeCloseTo(-9.6, 5) // (0.452-0.5)/0.5 * 100
+      expect(result?.stats?.visit_duration.value).toBe(180)
+      expect(result?.stats?.visit_duration.change).toBeCloseTo(20, 5) // (180-150)/150 * 100
 
-      expect(result?.timeseries).toHaveLength(3)
-      expect(result?.timeseries[0]).toEqual({
+      expect(result?.timeseries?.map(({ visitors, pageviews }) => ({ visitors, pageviews }))).toEqual([
+        { visitors: 100, pageviews: 250 },
+        { visitors: 120, pageviews: 300 },
+        { visitors: 110, pageviews: 280 },
+      ])
+      expect(result?.pages).toHaveLength(2)
+      expect(result?.pages?.[0]).toMatchObject({ page: '/', visitors: 500, pageviews: 1200, visit_duration: 240 })
+      expect(result?.pages?.[0].bounce_rate).toBeCloseTo(35, 5)
+      expect(result?.sources).toHaveLength(3)
+      expect(result?.events).toHaveLength(2)
+      expect(result?.realtime).toEqual({ visitors: 7 })
+    })
+
+    it('should return timeseries dates the dashboard chart can parse', async () => {
+      routeGA4(allReports)
+
+      const result = await provider.getDashboardData('7d')
+
+      // GA4 returns the date dimension as YYYYMMDD. The chart passes it to new Date()
+      // (src/lib/formatters.ts formatAxisDate), which needs an ISO date.
+      expect(result?.timeseries?.[0]).toEqual({
         date: '2024-01-08',
         visitors: 100,
         pageviews: 250,
       })
-
-      expect(result?.pages).toHaveLength(2)
-      expect(result?.sources).toHaveLength(3)
-      expect(result?.events).toHaveLength(2)
-      expect(result?.realtime).toBeUndefined() // GA doesn't return realtime in this implementation
     })
 
     it('should format date ranges correctly for GA4 API', async () => {
-      const mockDate = new Date('2024-01-10T12:00:00Z')
-      vi.setSystemTime(mockDate)
-      
-      ;(global.fetch as any).mockResolvedValue(mockFetchResponse({ rows: [] }))
+      routeGA4(allReports)
 
-      await provider.getDashboardData('30d')
+      const ranges = [
+        { input: 'day', current: { startDate: 'today', endDate: 'today' } },
+        { input: '7d', current: { startDate: '7daysAgo', endDate: 'today' } },
+        { input: '30d', current: { startDate: '30daysAgo', endDate: 'today' } },
+        { input: '12mo', current: { startDate: '365daysAgo', endDate: 'today' } },
+      ]
 
-      const calls = (global.fetch as any).mock.calls
-      const body = JSON.parse(calls[0][1].body)
-      
-      expect(body.dateRanges[0].startDate).toBe('2023-12-11')
-      expect(body.dateRanges[0].endDate).toBe('2024-01-10')
+      for (const { input, current } of ranges) {
+        fetchMock.mockClear()
+        await provider.getDashboardData(input)
+
+        const overview = callFor('overview')
+        expect(overview).toBeDefined()
+        if (!overview) return
+        const { dateRanges } = bodyOf(overview)
+        expect(dateRanges).toHaveLength(2)
+        expect(dateRanges?.[0]).toEqual(current)
+
+        // Every breakdown report covers only the current period.
+        const timeseries = callFor('timeseries')
+        expect(timeseries && bodyOf(timeseries).dateRanges).toEqual([current])
+      }
     })
 
     it('should handle bounce rate as decimal conversion', async () => {
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse({
+      routeGA4({
+        overview: {
           rows: [
             {
-              dimensionValues: [{ value: '20240110' }],
-              metricValues: [
-                { value: '1000' },
-                { value: '2000' },
-                { value: '0.753' }, // 75.3% bounce rate as decimal
-                { value: '200' },
-              ],
+              dimensionValues: [{ value: 'date_range_0' }],
+              metricValues: [{ value: '1000' }, { value: '2000' }, { value: '0.753' }, { value: '200' }],
             },
           ],
-        }))
-        .mockResolvedValue(mockFetchResponse({ rows: [] }))
+        },
+      })
 
       const result = await provider.getDashboardData('7d')
 
-      expect(result?.stats.bounceRate).toBe(75.3)
+      expect(result?.stats?.bounce_rate.value).toBeCloseTo(75.3, 5)
     })
 
-    it('should send correct API key in query parameters', async () => {
-      ;(global.fetch as any).mockResolvedValue(mockFetchResponse({ rows: [] }))
+    it('should send the API key in the query string of every request', async () => {
+      routeGA4(allReports)
 
       await provider.getDashboardData('7d')
 
-      const calls = (global.fetch as any).mock.calls
-      const url = calls[0][0]
-      expect(url).toContain('key=test-api-key')
+      expect(fetchMock).toHaveBeenCalledTimes(6)
+      for (const [input, init] of fetchMock.mock.calls) {
+        const url = new URL(String(input))
+        expect(url.searchParams.get('key')).toBe('test-api-key')
+        expect(url.pathname).toMatch(/^\/v1beta\/properties\/123456789:(runReport|runRealtimeReport)$/)
+        expect(init?.method).toBe('POST')
+        expect(init?.headers).toEqual({ 'Content-Type': 'application/json' })
+      }
+      expect(callFor('realtime')).toBeDefined()
     })
 
-    it('should construct proper report request body', async () => {
-      ;(global.fetch as any).mockResolvedValue(mockFetchResponse({ rows: [] }))
+    it('should construct proper report request bodies', async () => {
+      routeGA4(allReports)
 
       await provider.getDashboardData('7d')
 
-      const calls = (global.fetch as any).mock.calls
-      const body = JSON.parse(calls[0][1].body)
-
-      // Check dimensions
-      expect(body.dimensions).toEqual([{ name: 'date' }])
-      
-      // Check metrics
-      expect(body.metrics).toContainEqual({ name: 'totalUsers' })
-      expect(body.metrics).toContainEqual({ name: 'screenPageViews' })
-      expect(body.metrics).toContainEqual({ name: 'bounceRate' })
-      expect(body.metrics).toContainEqual({ name: 'averageSessionDuration' })
+      const overview = callFor('overview')
+      const timeseries = callFor('timeseries')
+      expect(overview && bodyOf(overview).dimensions).toBeUndefined()
+      expect(overview && bodyOf(overview).metrics).toEqual([
+        { name: 'activeUsers' },
+        { name: 'screenPageViews' },
+        { name: 'bounceRate' },
+        { name: 'averageSessionDuration' },
+      ])
+      expect(timeseries && bodyOf(timeseries).dimensions).toEqual([{ name: 'date' }])
+      expect(timeseries && bodyOf(timeseries).metrics).toEqual([{ name: 'activeUsers' }, { name: 'screenPageViews' }])
+      expect(timeseries && bodyOf(timeseries).orderBys).toEqual([{ dimension: { dimensionName: 'date' } }])
     })
 
-    it('should filter out page_view events from custom events', async () => {
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({
-          rows: [
-            {
-              dimensionValues: [{ value: 'page_view' }],
-              metricValues: [{ value: '1000' }],
-            },
-            {
-              dimensionValues: [{ value: 'sign_up' }],
-              metricValues: [{ value: '50' }],
-            },
-            {
-              dimensionValues: [{ value: 'purchase' }],
-              metricValues: [{ value: '25' }],
-            },
-          ],
-        }))
+    it('should map custom events and their conversion rate', async () => {
+      routeGA4(allReports)
 
       const result = await provider.getDashboardData('7d')
 
-      // Should only have 2 events (sign_up and purchase), not page_view
-      expect(result?.events).toHaveLength(2)
-      expect(result?.events.find(e => e.name === 'page_view')).toBeUndefined()
-      expect(result?.events.find(e => e.name === 'sign_up')).toBeDefined()
+      // conversion_rate is the event's users over all active users (1234).
+      expect(result?.events?.map(({ goal, events, visitors }) => ({ goal, events, visitors }))).toEqual([
+        { goal: 'sign_up', events: 50, visitors: 45 },
+        { goal: 'purchase', events: 25, visitors: 23 },
+      ])
+      expect(result?.events?.[0].conversion_rate).toBeCloseTo((45 / 1234) * 100, 5)
+    })
+
+    it('should ask GA4 to filter page_view out of the custom events report', async () => {
+      routeGA4(allReports)
+
+      await provider.getDashboardData('7d')
+
+      // A FilterExpression sets exactly one of andGroup, orGroup, notExpression or
+      // filter, and notExpression takes a nested FilterExpression.
+      const events = callFor('events')
+      expect(events && bodyOf(events).dimensionFilter).toEqual({
+        notExpression: {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { matchType: 'EXACT', value: 'page_view', caseSensitive: false },
+          },
+        },
+      })
     })
 
     it('should handle empty API responses', async () => {
-      ;(global.fetch as any).mockResolvedValue(mockFetchResponse({ rows: [] }))
+      routeGA4({})
 
       const result = await provider.getDashboardData('7d')
 
-      expect(result).toBeDefined()
-      expect(result?.stats.visitors).toBe(0)
-      expect(result?.stats.pageviews).toBe(0)
+      expect(result).not.toBeNull()
+      expect(result?.stats?.visitors).toEqual({ value: 0, change: null })
+      expect(result?.stats?.pageviews).toEqual({ value: 0, change: null })
       expect(result?.timeseries).toEqual([])
       expect(result?.pages).toEqual([])
+      expect(result?.sources).toEqual([])
+      expect(result?.events).toEqual([])
+      expect(result?.realtime).toEqual({ visitors: 0 })
     })
 
     it('should handle API errors gracefully', async () => {
-      ;(global.fetch as any).mockRejectedValueOnce(new Error('API Error'))
+      fetchMock.mockRejectedValue(new Error('API Error'))
 
       const result = await provider.getDashboardData('7d')
 
@@ -253,58 +338,44 @@ describe('GoogleAnalyticsProvider', () => {
     })
 
     it('should handle non-200 responses', async () => {
-      ;(global.fetch as any).mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        text: () => Promise.resolve('Unauthorized'),
-      })
+      fetchMock.mockImplementation(() => mockFetchResponse('Unauthorized', 401))
 
       const result = await provider.getDashboardData('7d')
 
       expect(result).toBeNull()
     })
 
-    it('should calculate source percentages correctly', async () => {
-      ;(global.fetch as any)
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({ rows: [] }))
-        .mockResolvedValueOnce(mockFetchResponse({
-          rows: [
-            {
-              dimensionValues: [{ value: 'google' }],
-              metricValues: [{ value: '500' }],
-            },
-            {
-              dimensionValues: [{ value: 'facebook' }],
-              metricValues: [{ value: '300' }],
-            },
-            {
-              dimensionValues: [{ value: 'twitter' }],
-              metricValues: [{ value: '200' }],
-            },
-          ],
-        }))
-        .mockResolvedValue(mockFetchResponse({ rows: [] }))
+    it('should map traffic sources', async () => {
+      routeGA4(allReports)
 
       const result = await provider.getDashboardData('7d')
 
-      expect(result?.sources).toHaveLength(3)
-      expect(result?.sources[0].percentage).toBe(50) // 500/1000 * 100
-      expect(result?.sources[1].percentage).toBe(30) // 300/1000 * 100
-      expect(result?.sources[2].percentage).toBe(20) // 200/1000 * 100
+      expect(result?.sources?.map(({ source, visitors, visit_duration }) => ({ source, visitors, visit_duration }))).toEqual([
+        { source: 'google', visitors: 400, visit_duration: 200 },
+        { source: '(direct)', visitors: 350, visit_duration: 150 },
+        { source: 'twitter.com', visitors: 200, visit_duration: 90 },
+      ])
+      expect(result?.sources?.map(({ bounce_rate }) => bounce_rate)).toEqual([
+        expect.closeTo(40, 5),
+        expect.closeTo(50, 5),
+        expect.closeTo(60, 5),
+      ])
     })
   })
 
   describe('trackEvent', () => {
-    it('should not implement event tracking', () => {
-      provider = new GoogleAnalyticsProvider({
+    it('should be a client-side stub that only logs the event', () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const provider = createGoogleAnalyticsProvider({
         propertyId: '123456789',
         apiKey: 'test-api-key',
       })
 
-      expect(provider.trackEvent).toBeUndefined()
+      provider.trackEvent?.('sign_up', { method: 'email' })
+
+      expect(log).toHaveBeenCalledWith('Google Analytics trackEvent:', 'sign_up', { method: 'email' })
+      expect(fetchMock).not.toHaveBeenCalled()
+      log.mockRestore()
     })
   })
 })

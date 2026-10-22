@@ -31,11 +31,15 @@ export const AnalyticsClient: React.FC = () => {
     if (typeof window !== 'undefined') {
       const analyticsWindow = window as AnalyticsWindow
       setTimePeriods(analyticsWindow.__analyticsTimePeriods || ['day', '7d', '30d', '12mo'])
-      setDefaultTimePeriod(analyticsWindow.__analyticsDefaultTimePeriod || '7d')
+      const configuredDefault = analyticsWindow.__analyticsDefaultTimePeriod || '7d'
+      setDefaultTimePeriod(configuredDefault)
+      setPeriod(configuredDefault)
       setEnableComparison(analyticsWindow.__analyticsEnableComparison !== false)
     }
+    setConfigReady(true)
   }, [])
   
+  const [configReady, setConfigReady] = useState(false)
   const [period, setPeriod] = useState<TimePeriod>(defaultTimePeriod)
   const [showCustomDatePicker, setShowCustomDatePicker] = useState(false)
   const [customStartDate, setCustomStartDate] = useState('')
@@ -85,10 +89,11 @@ export const AnalyticsClient: React.FC = () => {
       }
     }
 
-    if (period !== 'custom') {
+    // Wait for the configured default period, so the first fetch is not for the fallback
+    if (configReady && period !== 'custom') {
       fetchData()
     }
-  }, [period, comparison])
+  }, [configReady, period, comparison])
 
   // Add custom styles for analytics
   useEffect(() => {

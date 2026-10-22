@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { resolve } from 'path'
 import react from '@vitejs/plugin-react'
 
@@ -8,6 +8,16 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./test/setup.ts'],
+    // test/e2e needs a running Payload app and a database, so it stays out of the
+    // default run (the CI commit stage). Keep Vitest's default excludes.
+    exclude: [...configDefaults.exclude, 'test/e2e/**'],
+    server: {
+      deps: {
+        // @payloadcms/ui imports CSS (react-image-crop's ReactCrop.css), which Node
+        // cannot load when the package is externalized. Inlining it lets Vite handle the CSS.
+        inline: ['@payloadcms/ui'],
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],

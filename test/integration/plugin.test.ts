@@ -1,21 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { analyticsPlugin } from '@/index'
 import { createMockConfig, createMockProvider } from '../utils/test-helpers'
-import type { Plugin } from 'payload'
+import type { AnalyticsGlobals } from '@/types'
+
+const analyticsGlobal = globalThis as typeof globalThis & AnalyticsGlobals
 
 describe('analyticsPlugin', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // Clear global state
-    if ('__analyticsProvider' in global) {
-      delete (global as any).__analyticsProvider
-    }
-    if ('__analyticsProviderName' in global) {
-      delete (global as any).__analyticsProviderName
-    }
-    if ('analyticsConfig' in global) {
-      delete (global as any).analyticsConfig
-    }
+    delete analyticsGlobal.__analyticsProvider
+    delete analyticsGlobal.__analyticsProviderName
+    delete analyticsGlobal.__analyticsTimePeriods
+    delete analyticsGlobal.__analyticsDefaultTimePeriod
+    delete analyticsGlobal.__analyticsEnableComparison
   })
 
   describe('plugin initialization', () => {
@@ -42,8 +40,12 @@ describe('analyticsPlugin', () => {
       const modifiedConfig = plugin(config)
 
       expect(modifiedConfig.endpoints).toBeDefined()
-      expect(modifiedConfig.endpoints).toHaveLength(1)
-      expect(modifiedConfig.endpoints?.[0].path).toBe('/api/analytics/dashboard')
+      expect(modifiedConfig.endpoints).toHaveLength(2)
+      // Payload mounts endpoint paths under /api
+      expect(modifiedConfig.endpoints?.map(endpoint => endpoint.path)).toEqual([
+        '/analytics/dashboard',
+        '/analytics/collection',
+      ])
     })
 
     it('should not add endpoints when disabled', () => {
@@ -92,7 +94,8 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       const modifiedConfig = plugin(config)
 
-      expect(modifiedConfig.admin?.components?.views?.['custom-analytics']).toBeDefined()
+      expect(modifiedConfig.admin?.components?.views?.analytics).toBeDefined()
+      expect(modifiedConfig.admin?.components?.views?.analytics?.path).toBe('/custom-analytics')
     })
   })
 
@@ -109,8 +112,8 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).__analyticsProvider).toBeDefined()
-      expect((global as any).__analyticsProvider.name).toBe('plausible')
+      expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+      expect(analyticsGlobal.__analyticsProvider?.name).toBe('plausible')
     })
 
     it('should initialize Umami provider', () => {
@@ -126,8 +129,8 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).analyticsProvider).toBeDefined()
-      expect((global as any).analyticsProvider.name).toBe('umami')
+      expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+      expect(analyticsGlobal.__analyticsProvider?.name).toBe('umami')
     })
 
     it('should initialize Matomo provider', () => {
@@ -143,8 +146,8 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).analyticsProvider).toBeDefined()
-      expect((global as any).analyticsProvider.name).toBe('matomo')
+      expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+      expect(analyticsGlobal.__analyticsProvider?.name).toBe('matomo')
     })
 
     it('should initialize PostHog provider', () => {
@@ -159,8 +162,8 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).analyticsProvider).toBeDefined()
-      expect((global as any).analyticsProvider.name).toBe('posthog')
+      expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+      expect(analyticsGlobal.__analyticsProvider?.name).toBe('posthog')
     })
 
     it('should initialize Google Analytics provider', () => {
@@ -175,8 +178,8 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).analyticsProvider).toBeDefined()
-      expect((global as any).analyticsProvider.name).toBe('google-analytics')
+      expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+      expect(analyticsGlobal.__analyticsProvider?.name).toBe('google-analytics')
     })
 
     it('should accept custom provider instance', () => {
@@ -189,7 +192,7 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).__analyticsProvider).toBe(customProvider)
+      expect(analyticsGlobal.__analyticsProvider).toBe(customProvider)
     })
   })
 
@@ -294,9 +297,9 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).__analyticsTimePeriods).toEqual(['day', '7d', '30d'])
-      expect((global as any).__analyticsDefaultTimePeriod).toBe('30d')
-      expect((global as any).__analyticsEnableComparison).toBe(false)
+      expect(analyticsGlobal.__analyticsTimePeriods).toEqual(['day', '7d', '30d'])
+      expect(analyticsGlobal.__analyticsDefaultTimePeriod).toBe('30d')
+      expect(analyticsGlobal.__analyticsEnableComparison).toBe(false)
     })
 
     it('should use default values when not specified', () => {
@@ -307,9 +310,9 @@ describe('analyticsPlugin', () => {
       const config = createMockConfig()
       plugin(config)
 
-      expect((global as any).__analyticsProvider).toBeDefined()
-      expect((global as any).__analyticsDefaultTimePeriod).toBe('7d')
-      expect((global as any).__analyticsEnableComparison).toBe(true)
+      expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+      expect(analyticsGlobal.__analyticsDefaultTimePeriod).toBe('7d')
+      expect(analyticsGlobal.__analyticsEnableComparison).toBe(true)
     })
   })
 
@@ -318,18 +321,20 @@ describe('analyticsPlugin', () => {
       process.env.PLAUSIBLE_API_KEY = 'env-key'
       process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN = 'env-site.com'
 
-      const plugin = analyticsPlugin({
-        provider: 'plausible',
-      })
+      try {
+        const plugin = analyticsPlugin({
+          provider: 'plausible',
+        })
 
-      const config = createMockConfig()
-      plugin(config)
+        const config = createMockConfig()
+        plugin(config)
 
-      expect((global as any).analyticsProvider).toBeDefined()
-      expect((global as any).analyticsProvider.name).toBe('plausible')
-
-      delete process.env.PLAUSIBLE_API_KEY
-      delete process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN
+        expect(analyticsGlobal.__analyticsProvider).toBeDefined()
+        expect(analyticsGlobal.__analyticsProvider?.name).toBe('plausible')
+      } finally {
+        delete process.env.PLAUSIBLE_API_KEY
+        delete process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN
+      }
     })
   })
 })

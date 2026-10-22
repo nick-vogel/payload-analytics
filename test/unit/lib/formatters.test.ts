@@ -24,8 +24,11 @@ describe('formatNumber', () => {
 
   it('should handle edge cases', () => {
     expect(formatNumber(NaN)).toBe('NaN')
-    expect(formatNumber(Infinity)).toBe('Infinity')
     expect(formatNumber(-Infinity)).toBe('-Infinity')
+  })
+
+  it('should render positive Infinity without a suffix', () => {
+    expect(formatNumber(Infinity)).toBe('Infinity')
   })
 })
 
