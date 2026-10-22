@@ -1,9 +1,9 @@
-import type { Config } from 'payload'
+import type { Config, Field } from 'payload'
 
 export interface AnalyticsProvider {
   name: string
   getDashboardData: (period?: string, comparison?: ComparisonData) => Promise<DashboardData | null>
-  trackEvent?: (eventName: string, props?: Record<string, any>) => void
+  trackEvent?: (eventName: string, props?: Record<string, unknown>) => void
 }
 
 export interface PlausibleConfig {
@@ -76,7 +76,7 @@ export interface CollectionAnalyticsConfig {
   enabled: boolean
   rootPath: string
   tabbedUI?: boolean
-  fields?: (args: { defaultFields: any[] }) => any[]
+  fields?: (args: { defaultFields: Field[] }) => Field[]
 }
 
 // Base configuration shared by all providers
@@ -116,6 +116,22 @@ export interface LegacyAnalyticsPluginConfig extends BaseAnalyticsConfig {
   matomo?: MatomoConfig
   posthog?: PostHogConfig
   googleAnalytics?: GoogleAnalyticsConfig
+}
+
+// Values the plugin stores on the Node global for API routes and server components
+export interface AnalyticsGlobals {
+  __analyticsProvider?: AnalyticsProvider
+  __analyticsProviderName?: string
+  __analyticsUseGenericIcon?: boolean
+  __analyticsTimePeriods?: TimePeriod[]
+  __analyticsDefaultTimePeriod?: TimePeriod
+  __analyticsComparisonOptions?: ComparisonOption[]
+  __analyticsEnableComparison?: boolean
+  __analyticsDashboardPath?: string
+  __analyticsExternalDashboardUrl?: string
+  __analyticsExternalDashboardLinkText?: string
+  __analyticsShowExternalLink?: boolean
+  __adminRoute?: string
 }
 
 export interface DashboardData {

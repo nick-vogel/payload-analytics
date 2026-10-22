@@ -5,6 +5,14 @@ import { formatNumber, formatPercentage, formatDuration } from '../lib/formatter
 import type { DashboardData } from '../types'
 import { ExternalLink } from './ExternalLink'
 
+// Values AnalyticsView injects on window, plus the Payload client config if present
+interface AnalyticsWindow extends Window {
+  __analyticsExternalDashboardUrl?: string
+  __analyticsExternalDashboardLinkText?: string
+  __analyticsShowExternalLink?: boolean
+  __payloadConfig?: { routes?: { api?: string } }
+}
+
 export const AnalyticsWidget: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -49,14 +57,15 @@ export const AnalyticsWidget: React.FC = () => {
 
   useEffect(() => {
     // Get config from global
+    const analyticsWindow = window as AnalyticsWindow
     if (typeof window !== 'undefined') {
-      setExternalUrl((window as any).__analyticsExternalDashboardUrl || null)
-      setExternalLinkText((window as any).__analyticsExternalDashboardLinkText || 'View in Dashboard')
-      setShowExternalLink((window as any).__analyticsShowExternalLink !== false)
+      setExternalUrl(analyticsWindow.__analyticsExternalDashboardUrl || null)
+      setExternalLinkText(analyticsWindow.__analyticsExternalDashboardLinkText || 'View in Dashboard')
+      setShowExternalLink(analyticsWindow.__analyticsShowExternalLink !== false)
     }
     
     // Widget always shows today's data
-    const apiRoute = (window as any).__payloadConfig?.routes?.api || '/api'
+    const apiRoute = analyticsWindow.__payloadConfig?.routes?.api || '/api'
     fetch(`${apiRoute}/analytics/dashboard?period=day`, {
       credentials: 'same-origin',
       headers: {

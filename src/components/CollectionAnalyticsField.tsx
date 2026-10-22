@@ -1,14 +1,10 @@
 'use client'
 
 import React from 'react'
-import { useFormFields, useConfig } from '@payloadcms/ui'
-import { useRouter } from 'next/navigation'
+import { useFormFields } from '@payloadcms/ui'
 import { CollectionAnalytics } from './CollectionAnalytics'
 
 export const CollectionAnalyticsField: React.FC<{ custom?: { rootPath?: string } }> = ({ custom }) => {
-  const config = useConfig()
-  const router = useRouter()
-  
   // Get collection slug from URL
   const pathSegments = typeof window !== 'undefined' ? window.location.pathname.split('/') : []
   const adminIndex = pathSegments.indexOf('admin')

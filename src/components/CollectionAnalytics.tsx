@@ -4,6 +4,11 @@ import React, { useEffect, useState } from 'react'
 import { formatNumber, formatPercentage, formatDuration } from '../lib/formatters'
 import type { DashboardData } from '../types'
 
+// The Payload client config, if something has exposed it on window
+interface PayloadConfigWindow extends Window {
+  __payloadConfig?: { routes?: { api?: string } }
+}
+
 interface CollectionAnalyticsProps {
   collectionSlug: string
   documentSlug: string
@@ -27,7 +32,7 @@ export const CollectionAnalytics: React.FC<CollectionAnalyticsProps> = ({
       }
 
       try {
-        const apiRoute = (window as any).__payloadConfig?.routes?.api || '/api'
+        const apiRoute = (window as PayloadConfigWindow).__payloadConfig?.routes?.api || '/api'
         // Construct the path to track
         const fullPath = `${rootPath}/${documentSlug}`.replace(/\/+/g, '/')
         

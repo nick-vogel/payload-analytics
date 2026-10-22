@@ -1,7 +1,7 @@
 'use client'
 
-import React, {useState, useEffect} from 'react'
-import {SelectInput} from '@payloadcms/ui'
+import React from 'react'
+import {SelectInput, type ReactSelectOption} from '@payloadcms/ui'
 import type {ComparisonOption, ComparisonData} from '../types'
 
 interface ComparisonSelectorProps {
@@ -22,18 +22,16 @@ const COMPARISON_OPTIONS = [
 export const ComparisonSelector: React.FC<ComparisonSelectorProps> = ({
                                                                           value,
                                                                           onChange,
-                                                                          currentPeriod,
-                                                                          currentStartDate,
-                                                                          currentEndDate,
                                                                       }) => {
 
-    const handleComparisonChange = (option: any) => {
-        if (!option || option.value === 'none') {
+    const handleComparisonChange = (option: ReactSelectOption | ReactSelectOption[]) => {
+        const selectedValue = Array.isArray(option) ? option[0]?.value : option?.value
+        if (!option || selectedValue === 'none') {
             onChange(null)
             return
         }
 
-        const newValue = option.value as ComparisonOption
+        const newValue = selectedValue as ComparisonOption
 
         if (newValue === 'custom') {
             onChange({

@@ -48,7 +48,7 @@ const MatomoTimeSeriesSchema = z.record(z.string(), z.object({
 
 async function fetchMatomoAPI<T>(
   config: MatomoConfig,
-  params: Record<string, any> = {},
+  params: Record<string, unknown> = {},
   schema: z.ZodSchema<T>
 ): Promise<T | null> {
   if (!config.apiToken || !config.siteId) {
@@ -99,8 +99,6 @@ async function fetchMatomoAPI<T>(
 }
 
 function getMatomoPeriod(period: string): { period: string; date: string } {
-  const today = new Date().toISOString().split('T')[0]
-  
   switch (period) {
     case 'day':
       return { period: 'day', date: 'today' }
@@ -130,7 +128,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
   return {
     name: 'matomo',
     
-    async getDashboardData(period: string = '7d', comparison?: ComparisonData): Promise<DashboardData | null> {
+    async getDashboardData(period: string = '7d', _comparison?: ComparisonData): Promise<DashboardData | null> {
       if (!apiConfig.apiToken || !apiConfig.siteId) {
         console.warn('Matomo API token or site ID is not configured')
         return null
@@ -283,7 +281,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
       }
     },
 
-    trackEvent(eventName: string, props?: Record<string, any>) {
+    trackEvent(eventName: string, props?: Record<string, unknown>) {
       // This would be implemented on the client side using Matomo's tracking script
       console.log('Track event:', eventName, props)
     }

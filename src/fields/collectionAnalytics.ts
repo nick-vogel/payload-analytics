@@ -1,4 +1,4 @@
-import type { Field, GroupField, TextField } from 'payload'
+import type { Field, GroupField } from 'payload'
 import type { CollectionAnalyticsConfig } from '../types'
 
 export interface CollectionAnalyticsFieldArgs {

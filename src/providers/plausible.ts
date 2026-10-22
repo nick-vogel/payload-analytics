@@ -112,7 +112,7 @@ export function createPlausibleProvider(config: PlausibleConfig): AnalyticsProvi
 
       try {
         // Handle custom date ranges
-        let apiParams: Record<string, string> = { metrics: 'visitors,pageviews,bounce_rate,visit_duration' }
+        const apiParams: Record<string, string> = { metrics: 'visitors,pageviews,bounce_rate,visit_duration' }
         
         if (period.includes(',')) {
           // Custom date range format: "YYYY-MM-DD,YYYY-MM-DD"
@@ -218,7 +218,7 @@ export function createPlausibleProvider(config: PlausibleConfig): AnalyticsProvi
       }
     },
 
-    trackEvent(eventName: string, props?: Record<string, any>) {
+    trackEvent(eventName: string, props?: Record<string, unknown>) {
       // This would be implemented on the client side
       // For now, we'll just log it
       console.log('Track event:', eventName, props)

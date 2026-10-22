@@ -1,8 +1,8 @@
 import type { PayloadRequest } from 'payload'
-import type { AnalyticsProvider } from '../types'
+import type { AnalyticsGlobals } from '../types'
 
 export const collectionAnalyticsEndpoint = async (req: PayloadRequest): Promise<Response> => {
-  const provider = (global as any).__analyticsProvider as AnalyticsProvider
+  const provider = (globalThis as typeof globalThis & AnalyticsGlobals).__analyticsProvider
   if (!provider) {
     return Response.json({ error: 'Analytics provider not configured' }, { status: 500 })
   }
@@ -51,7 +51,7 @@ export const collectionAnalyticsEndpoint = async (req: PayloadRequest): Promise<
     }
 
     return Response.json(filteredData)
-  } catch (error) {
+  } catch {
     return Response.json({ error: 'Failed to fetch analytics data' }, { status: 500 })
   }
 }

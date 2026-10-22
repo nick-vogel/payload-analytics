@@ -1,5 +1,17 @@
 import type { Config } from 'payload'
-import type { AnalyticsPluginConfig, LegacyAnalyticsPluginConfig, AnalyticsProvider, DashboardWidgetConfig, AnalyticsViewConfig } from './types'
+import type {
+  AnalyticsGlobals,
+  AnalyticsPluginConfig,
+  LegacyAnalyticsPluginConfig,
+  AnalyticsProvider,
+  DashboardWidgetConfig,
+  AnalyticsViewConfig,
+  GoogleAnalyticsConfig,
+  MatomoConfig,
+  PlausibleConfig,
+  PostHogConfig,
+  UmamiConfig,
+} from './types'
 import { createPlausibleProvider } from './providers/plausible'
 import { createUmamiProvider } from './providers/umami'
 import { createMatomoProvider } from './providers/matomo'
@@ -8,9 +20,10 @@ import { createGoogleAnalyticsProvider } from './providers/google-analytics'
 import { DEFAULT_TIME_PERIODS, DEFAULT_COMPARISON_OPTIONS } from './constants'
 import { analyticsEndpoint } from './endpoints/analytics'
 import { collectionAnalyticsEndpoint } from './endpoints/collectionAnalytics'
-import { createAnalyticsTab } from './fields/analyticsTab'
 import { createCollectionAnalyticsFields } from './fields/collectionAnalytics'
-import path from 'path'
+
+// Every field any built-in provider reads; each provider takes the subset it knows
+type ProviderConnectionConfig = PlausibleConfig & UmamiConfig & MatomoConfig & PostHogConfig & GoogleAnalyticsConfig
 
 export const analyticsPlugin = (pluginConfig: AnalyticsPluginConfig | LegacyAnalyticsPluginConfig) => (config: Config): Config => {
   // Extract base configuration
@@ -34,7 +47,7 @@ export const analyticsPlugin = (pluginConfig: AnalyticsPluginConfig | LegacyAnal
   } = pluginConfig
 
   // Handle provider configuration - support both new and legacy patterns
-  let providerConfig: any = {}
+  let providerConfig: ProviderConnectionConfig = {}
   
   if ('config' in pluginConfig) {
     // New pattern: config field
@@ -137,18 +150,19 @@ export const analyticsPlugin = (pluginConfig: AnalyticsPluginConfig | LegacyAnal
   const finalLinkText = externalDashboardLinkText || `View in ${typeof provider === 'string' ? provider.charAt(0).toUpperCase() + provider.slice(1).replace(/-/g, ' ') : 'Dashboard'}`
 
   // Store provider and config in global for API routes and components
-  ;(global as any).__analyticsProvider = providerInstance
-  ;(global as any).__analyticsProviderName = typeof provider === 'string' ? provider : provider.name
-  ;(global as any).__analyticsUseGenericIcon = useGenericIcon
-  ;(global as any).__analyticsTimePeriods = timePeriods
-  ;(global as any).__analyticsDefaultTimePeriod = defaultTimePeriod
-  ;(global as any).__analyticsComparisonOptions = comparisonOptions
-  ;(global as any).__analyticsEnableComparison = enableComparison
-  ;(global as any).__analyticsDashboardPath = dashboardPath
-  ;(global as any).__analyticsExternalDashboardUrl = finalExternalUrl
-  ;(global as any).__analyticsExternalDashboardLinkText = finalLinkText
-  ;(global as any).__analyticsShowExternalLink = showExternalLink
-  ;(global as any).__adminRoute = '/admin' // Default admin route
+  const analyticsGlobal = globalThis as typeof globalThis & AnalyticsGlobals
+  analyticsGlobal.__analyticsProvider = providerInstance
+  analyticsGlobal.__analyticsProviderName = typeof provider === 'string' ? provider : provider.name
+  analyticsGlobal.__analyticsUseGenericIcon = useGenericIcon
+  analyticsGlobal.__analyticsTimePeriods = timePeriods
+  analyticsGlobal.__analyticsDefaultTimePeriod = defaultTimePeriod
+  analyticsGlobal.__analyticsComparisonOptions = comparisonOptions
+  analyticsGlobal.__analyticsEnableComparison = enableComparison
+  analyticsGlobal.__analyticsDashboardPath = dashboardPath
+  analyticsGlobal.__analyticsExternalDashboardUrl = finalExternalUrl
+  analyticsGlobal.__analyticsExternalDashboardLinkText = finalLinkText
+  analyticsGlobal.__analyticsShowExternalLink = showExternalLink
+  analyticsGlobal.__adminRoute = '/admin' // Default admin route
 
 
   const updatedConfig: Config = {
