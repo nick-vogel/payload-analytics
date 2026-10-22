@@ -361,6 +361,139 @@ describe('createGoogleAnalyticsProvider', () => {
         expect.closeTo(60, 5),
       ])
     })
+
+    it('should pair each relative period with the window just before it', async () => {
+      routeGA4(allReports)
+
+      const ranges = [
+        { input: '24h', current: { startDate: 'today', endDate: 'today' }, previous: { startDate: 'yesterday', endDate: 'yesterday' } },
+        { input: '14d', current: { startDate: '14daysAgo', endDate: 'today' }, previous: { startDate: '28daysAgo', endDate: '15daysAgo' } },
+        { input: '30d', current: { startDate: '30daysAgo', endDate: 'today' }, previous: { startDate: '60daysAgo', endDate: '31daysAgo' } },
+        { input: '12mo', current: { startDate: '365daysAgo', endDate: 'today' }, previous: { startDate: '730daysAgo', endDate: '366daysAgo' } },
+        // An unrecognised period falls back to the last 7 days.
+        { input: 'quarter', current: { startDate: '7daysAgo', endDate: 'today' }, previous: { startDate: '14daysAgo', endDate: '8daysAgo' } },
+      ]
+
+      for (const { input, current, previous } of ranges) {
+        fetchMock.mockClear()
+        await provider.getDashboardData(input)
+
+        const overview = callFor('overview')
+        expect(overview && bodyOf(overview).dateRanges, input).toEqual([current, previous])
+      }
+    })
+
+    describe('calendar month periods', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        // Mid-month and mid-day, in a leap year, so February ends on the 29th.
+        vi.setSystemTime(new Date('2024-03-15T12:00:00Z'))
+        routeGA4(allReports)
+      })
+
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      it('should request last month as explicit dates against the month before it', async () => {
+        await provider.getDashboardData('lastMonth')
+
+        const overview = callFor('overview')
+        expect(overview && bodyOf(overview).dateRanges).toEqual([
+          { startDate: '2024-02-01', endDate: '2024-02-29' },
+          { startDate: '2024-01-01', endDate: '2024-01-31' },
+        ])
+        const pages = callFor('pages')
+        expect(pages && bodyOf(pages).dateRanges).toEqual([{ startDate: '2024-02-01', endDate: '2024-02-29' }])
+      })
+
+      it('should request this month to date against the whole of last month', async () => {
+        await provider.getDashboardData('thisMonth')
+
+        const overview = callFor('overview')
+        expect(overview && bodyOf(overview).dateRanges).toEqual([
+          { startDate: '2024-03-01', endDate: 'today' },
+          { startDate: '2024-02-01', endDate: '2024-02-29' },
+        ])
+      })
+    })
+
+    it('should convert hourly dateHour keys and pass unknown date keys through', async () => {
+      routeGA4({
+        ...allReports,
+        timeseries: {
+          rows: [
+            { dimensionValues: [{ value: '2024010813' }], metricValues: [{ value: '4' }, { value: '9' }] },
+            { dimensionValues: [{ value: '(other)' }], metricValues: [{ value: '1' }, { value: '2' }] },
+          ],
+        },
+      })
+
+      const result = await provider.getDashboardData('day')
+
+      expect(result?.timeseries).toEqual([
+        { date: '2024-01-08T13:00:00', visitors: 4, pageviews: 9 },
+        { date: '(other)', visitors: 1, pageviews: 2 },
+      ])
+    })
+
+    it('should fill defaults for rows that omit dimension and metric values', async () => {
+      const blankRow = { dimensionValues: [], metricValues: [] }
+      routeGA4({
+        overview: { rows: [blankRow] },
+        timeseries: { rows: [blankRow] },
+        pages: { rows: [blankRow] },
+        sources: { rows: [blankRow] },
+        events: { rows: [blankRow] },
+        realtime: { rows: [blankRow] },
+      })
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result?.stats).toEqual({
+        visitors: { value: 0, change: null },
+        pageviews: { value: 0, change: null },
+        bounce_rate: { value: 0, change: null },
+        visit_duration: { value: 0, change: null },
+      })
+      expect(result?.timeseries).toEqual([{ date: '', visitors: 0, pageviews: 0 }])
+      expect(result?.pages).toEqual([{ page: '/', visitors: 0, pageviews: 0, bounce_rate: 0, visit_duration: 0 }])
+      expect(result?.sources).toEqual([{ source: 'Direct', visitors: 0, bounce_rate: 0, visit_duration: 0 }])
+      // With no active users there is nothing to divide by, so the conversion rate is 0.
+      expect(result?.events).toEqual([{ goal: '', events: 0, visitors: 0, conversion_rate: 0 }])
+      expect(result?.realtime).toEqual({ visitors: 0 })
+    })
+
+    it('should keep the overview when every breakdown report fails validation', async () => {
+      const malformed = { rows: 'not-an-array' }
+      routeGA4({
+        overview: overviewReport,
+        timeseries: malformed,
+        pages: malformed,
+        sources: malformed,
+        events: malformed,
+        realtime: malformed,
+      })
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result?.stats?.visitors).toEqual({ value: 1234, change: expect.closeTo(23.4, 5) })
+      expect(result?.timeseries).toEqual([])
+      expect(result?.pages).toEqual([])
+      expect(result?.sources).toEqual([])
+      expect(result?.events).toEqual([])
+      expect(result?.realtime).toEqual({ visitors: 0 })
+    })
+
+    it('should return null when the overview report fails validation', async () => {
+      routeGA4({ ...allReports, overview: { rows: [{ dimensionValues: 'bad' }] } })
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result).toBeNull()
+      // It stops after the overview instead of requesting the breakdowns.
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('trackEvent', () => {

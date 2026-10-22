@@ -341,6 +341,109 @@ describe('createPostHogProvider', () => {
       expect(url.searchParams.get('date_from')).toBe('2024-01-03T12:00:00.000Z')
       expect(url.searchParams.get('interval')).toBe('day')
     })
+
+    it('should use monthly intervals from the same day a year ago for 12mo', async () => {
+      fetchMock.mockImplementation(routePostHog({}))
+
+      await provider.getDashboardData('12mo')
+
+      // 12mo starts at local midnight on the same calendar day one year earlier,
+      // and the previous period is the year before that.
+      const localDay = (iso: string | null) => {
+        const date = new Date(String(iso))
+        return [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours()]
+      }
+      const [current] = requestedUrls()
+      expect(current.searchParams.get('interval')).toBe('month')
+      expect(localDay(current.searchParams.get('date_from'))).toEqual([2023, 1, 10, 0])
+      expect(current.searchParams.get('date_to')).toBe(NOW.toISOString())
+
+      const previous = requestedUrls().find((url) => url.searchParams.get('date_to') !== NOW.toISOString())
+      expect(previous?.searchParams.get('date_to')).toBe(current.searchParams.get('date_from'))
+      expect(localDay(previous?.searchParams.get('date_from') ?? null)).toEqual([2022, 1, 10, 0])
+    })
+
+    it('should report null changes when the previous-period responses fail validation', async () => {
+      fetchMock.mockImplementation(
+        routePostHog({
+          pageviews: trend(50),
+          visitors: trend(20),
+          prevPageviews: { result: [] },
+          prevVisitors: { results: 'nope' },
+        })
+      )
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result?.stats?.visitors).toEqual({ value: 20, change: null })
+      expect(result?.stats?.pageviews).toEqual({ value: 50, change: null })
+    })
+
+    it('should fill defaults for sparse rows and fail-safe lists', async () => {
+      fetchMock.mockImplementation(
+        routePostHog({
+          // Visitor data is shorter than the labels, and one pageview point is 0.
+          pageviews: trend(5, [5, 0], ['2024-01-09', '2024-01-10']),
+          visitors: trend(0, [3], ['2024-01-09', '2024-01-10']),
+          paths: { results: [{}] },
+          referrers: { results: [{ label: 'news.ycombinator.com' }] },
+          events: { results: [{ event: 'Signup', count: 0 }, { event: 'Purchase', count: 2 }] },
+        })
+      )
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result?.timeseries).toEqual([
+        { date: '2024-01-09', visitors: 3, pageviews: 5 },
+        { date: '2024-01-10', visitors: 0, pageviews: 0 },
+      ])
+      expect(result?.pages).toEqual([
+        { page: '/', visitors: 0, pageviews: 0, bounce_rate: 45, visit_duration: 120 },
+      ])
+      expect(result?.sources).toEqual([
+        { source: 'news.ycombinator.com', visitors: 0, bounce_rate: 45, visit_duration: 120 },
+      ])
+      // With no current visitors there is nothing to divide by, so conversion is 0.
+      expect(result?.events).toEqual([
+        { goal: 'Signup', visitors: 0, events: 0, conversion_rate: 0 },
+        { goal: 'Purchase', visitors: 2, events: 2, conversion_rate: 0 },
+      ])
+    })
+
+    it('should return empty lists when paths, referrers and events carry no results', async () => {
+      fetchMock.mockImplementation(
+        routePostHog({
+          pageviews: trend(5),
+          visitors: trend(5),
+          paths: {},
+          referrers: {},
+          events: {},
+        })
+      )
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result?.pages).toEqual([])
+      expect(result?.sources).toEqual([])
+      expect(result?.events).toEqual([])
+    })
+
+    it('should keep only the first 10 paths and referrers', async () => {
+      const many = Array.from({ length: 12 }, (_, i) => i)
+      fetchMock.mockImplementation(
+        routePostHog({
+          pageviews: trend(5),
+          visitors: trend(5),
+          paths: { results: many.map((i) => ({ path: `/p${i}`, count: i })) },
+          referrers: { results: many.map((i) => ({ label: `ref${i}`, count: i })) },
+        })
+      )
+
+      const result = await provider.getDashboardData('7d')
+
+      expect(result?.pages?.map((p) => p.page)).toEqual(many.slice(0, 10).map((i) => `/p${i}`))
+      expect(result?.sources?.map((s) => s.source)).toEqual(many.slice(0, 10).map((i) => `ref${i}`))
+    })
   })
 
   describe('trackEvent', () => {

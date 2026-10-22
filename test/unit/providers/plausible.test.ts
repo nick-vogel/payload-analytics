@@ -299,6 +299,98 @@ describe('createPlausibleProvider', () => {
       expect(result?.events).toEqual([])
       expect(result?.realtime).toEqual({ visitors: 0 })
     })
+
+    describe('named calendar periods', () => {
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        // Mid-month and mid-day, in a leap year, so February ends on the 29th.
+        vi.setSystemTime(new Date('2024-03-15T12:00:00Z'))
+        routePlausible({ aggregate: plausibleStatsResponse })
+      })
+
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      const dateParamsFor = async (period: string) => {
+        fetchMock.mockClear()
+        await provider.getDashboardData(period)
+        const call = callFor('aggregate')
+        const params = call ? urlOf(call).searchParams : new URLSearchParams()
+        return { period: params.get('period'), date: params.get('date') }
+      }
+
+      it('should send all time as a custom range from 2019 to today', async () => {
+        expect(await dateParamsFor('all')).toEqual({ period: 'custom', date: '2019-01-01,2024-03-15' })
+      })
+
+      it('should send this year as a custom range from January 1 to today', async () => {
+        expect(await dateParamsFor('thisYear')).toEqual({ period: 'custom', date: '2024-01-01,2024-03-15' })
+        expect(await dateParamsFor('year')).toEqual({ period: 'custom', date: '2024-01-01,2024-03-15' })
+      })
+
+      it('should send last year as the whole previous calendar year', async () => {
+        expect(await dateParamsFor('lastYear')).toEqual({ period: 'custom', date: '2023-01-01,2023-12-31' })
+      })
+
+      it('should send last month as its first and last day', async () => {
+        expect(await dateParamsFor('lastMonth')).toEqual({ period: 'custom', date: '2024-02-01,2024-02-29' })
+      })
+
+      it('should apply the same custom range to the timeseries and breakdowns', async () => {
+        await provider.getDashboardData('lastYear')
+
+        for (const call of [callFor('timeseries'), callFor('breakdown', 'event:page'), callFor('breakdown', 'visit:source')]) {
+          expect(call && urlOf(call).searchParams.get('date')).toBe('2023-01-01,2023-12-31')
+        }
+        // The realtime counter takes no period at all.
+        const realtime = callFor('realtime/visitors')
+        expect(realtime && urlOf(realtime).searchParams.has('period')).toBe(false)
+      })
+    })
+
+    describe('comparison parameters', () => {
+      const aggregateParams = () => {
+        const call = callFor('aggregate')
+        return call ? urlOf(call).searchParams : new URLSearchParams()
+      }
+
+      beforeEach(() => {
+        routePlausible({ aggregate: plausibleStatsResponse })
+      })
+
+      it('should ask for the previous year when comparing to the same period last year', async () => {
+        await provider.getDashboardData('30d', { period: 'sameLastYear' })
+
+        expect(aggregateParams().get('compare')).toBe('previous_year')
+        expect(aggregateParams().has('compare_from')).toBe(false)
+      })
+
+      it('should send an explicit comparison range for a custom comparison', async () => {
+        await provider.getDashboardData('30d', {
+          period: 'custom',
+          customStartDate: '2023-01-01',
+          customEndDate: '2023-01-31',
+        })
+
+        const params = aggregateParams()
+        expect(params.get('compare_from')).toBe('2023-01-01')
+        expect(params.get('compare_to')).toBe('2023-01-31')
+        expect(params.has('compare')).toBe(false)
+        const timeseries = callFor('timeseries')
+        expect(timeseries && urlOf(timeseries).searchParams.get('compare_from')).toBe('2023-01-01')
+      })
+
+      it('should send no comparison when a custom comparison is missing its end date', async () => {
+        await provider.getDashboardData('30d', { period: 'custom', customStartDate: '2023-01-01' })
+
+        const params = aggregateParams()
+        expect(params.has('compare')).toBe(false)
+        expect(params.has('compare_from')).toBe(false)
+        expect(params.has('compare_to')).toBe(false)
+        expect(params.get('period')).toBe('30d')
+      })
+    })
   })
 
   describe('trackEvent', () => {
