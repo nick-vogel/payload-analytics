@@ -3,6 +3,18 @@ import { AnalyticsClient } from './AnalyticsClient'
 import { DefaultTemplate } from '@payloadcms/next/templates'
 import { Gutter, SetStepNav } from '@payloadcms/ui'
 import { AdminViewServerProps } from 'payload'
+import type { TimePeriod } from '../types'
+
+// Values the plugin stores on the Node global in src/index.ts
+interface AnalyticsViewGlobals {
+  __analyticsTimePeriods?: TimePeriod[]
+  __analyticsDefaultTimePeriod?: TimePeriod
+  __analyticsEnableComparison?: boolean
+  __analyticsDashboardPath?: string
+  __analyticsExternalDashboardUrl?: string
+  __analyticsExternalDashboardLinkText?: string
+  __analyticsShowExternalLink?: boolean
+}
 
 export const AnalyticsView: React.FC<AdminViewServerProps> = ({ initPageResult, params, searchParams}) => {
 
@@ -25,13 +37,14 @@ export const AnalyticsView: React.FC<AdminViewServerProps> = ({ initPageResult, 
   }
 
   // Get config from global
-  const timePeriods = (global as any).__analyticsTimePeriods
-  const defaultTimePeriod = (global as any).__analyticsDefaultTimePeriod
-  const enableComparison = (global as any).__analyticsEnableComparison
-  const dashboardPath = (global as any).__analyticsDashboardPath || '/analytics'
-  const externalDashboardUrl = (global as any).__analyticsExternalDashboardUrl
-  const externalDashboardLinkText = (global as any).__analyticsExternalDashboardLinkText
-  const showExternalLink = (global as any).__analyticsShowExternalLink
+  const analyticsGlobal = global as typeof globalThis & AnalyticsViewGlobals
+  const timePeriods = analyticsGlobal.__analyticsTimePeriods
+  const defaultTimePeriod = analyticsGlobal.__analyticsDefaultTimePeriod
+  const enableComparison = analyticsGlobal.__analyticsEnableComparison
+  const dashboardPath = analyticsGlobal.__analyticsDashboardPath || '/analytics'
+  const externalDashboardUrl = analyticsGlobal.__analyticsExternalDashboardUrl
+  const externalDashboardLinkText = analyticsGlobal.__analyticsExternalDashboardLinkText
+  const showExternalLink = analyticsGlobal.__analyticsShowExternalLink
   
   // Get admin route from Payload config
   const adminRoute = '/admin' // Default admin route

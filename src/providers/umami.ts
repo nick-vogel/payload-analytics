@@ -50,7 +50,7 @@ const UmamiPageviewsSchema = z.object({
 async function fetchUmamiAPI<T>(
   config: UmamiConfig,
   endpoint: string,
-  params: Record<string, any> = {},
+  params: Record<string, unknown> = {},
   schema: z.ZodSchema<T>
 ): Promise<T | null> {
   if (!config.apiKey || !config.siteId) {
@@ -136,7 +136,7 @@ export function createUmamiProvider(config: UmamiConfig): AnalyticsProvider {
   return {
     name: 'umami',
     
-    async getDashboardData(period: string = '7d', comparison?: ComparisonData): Promise<DashboardData | null> {
+    async getDashboardData(period: string = '7d', _comparison?: ComparisonData): Promise<DashboardData | null> {
       if (!apiConfig.apiKey || !apiConfig.siteId) {
         console.warn('Umami API key or site ID is not configured')
         return null
@@ -236,7 +236,7 @@ export function createUmamiProvider(config: UmamiConfig): AnalyticsProvider {
       }
     },
 
-    trackEvent(eventName: string, props?: Record<string, any>) {
+    trackEvent(eventName: string, props?: Record<string, unknown>) {
       // This would be implemented on the client side using Umami's tracking script
       console.log('Track event:', eventName, props)
     }

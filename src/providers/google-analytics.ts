@@ -35,8 +35,8 @@ const GA4ResponseSchema = z.object({
 async function fetchGA4API(
   endpoint: string,
   config: Required<GoogleAnalyticsConfig>,
-  body: any
-): Promise<any> {
+  body: Record<string, unknown>
+): Promise<unknown> {
   const { propertyId, apiKey } = config
 
   if (!propertyId || !apiKey) {
@@ -97,7 +97,7 @@ function getGA4DateRange(period?: string) {
       previousStartDate = '60daysAgo'
       previousEndDate = '31daysAgo'
       break
-    case 'lastMonth':
+    case 'lastMonth': {
       const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1)
       const lastMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0)
       startDate = getDateString(lastMonth)
@@ -105,12 +105,14 @@ function getGA4DateRange(period?: string) {
       previousStartDate = getDateString(new Date(lastMonth.getFullYear(), lastMonth.getMonth() - 1, 1))
       previousEndDate = getDateString(new Date(lastMonth.getFullYear(), lastMonth.getMonth(), 0))
       break
-    case 'thisMonth':
+    }
+    case 'thisMonth': {
       const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1)
       startDate = getDateString(thisMonth)
       previousStartDate = getDateString(new Date(thisMonth.getFullYear(), thisMonth.getMonth() - 1, 1))
       previousEndDate = getDateString(new Date(thisMonth.getFullYear(), thisMonth.getMonth(), 0))
       break
+    }
     case '12mo':
       startDate = '365daysAgo'
       previousStartDate = '730daysAgo'
@@ -128,6 +130,20 @@ function getGA4DateRange(period?: string) {
   }
 }
 
+/**
+ * GA4 returns the `date` dimension as YYYYMMDD and `dateHour` as YYYYMMDDHH.
+ * The dashboard chart passes the value to `new Date()`, which needs ISO 8601,
+ * so convert to YYYY-MM-DD (or YYYY-MM-DDTHH:00:00 for an hourly key).
+ * Anything else is returned unchanged.
+ */
+function toISODate(value: string): string {
+  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})?$/.exec(value)
+  if (!match) return value
+  const [, year, month, day, hour] = match
+  const date = `${year}-${month}-${day}`
+  return hour === undefined ? date : `${date}T${hour}:00:00`
+}
+
 function parseMetricValue(value: string, type: string = 'TYPE_INTEGER'): number {
   if (type === 'TYPE_FLOAT' || type === 'TYPE_PERCENT') {
     return parseFloat(value) || 0
@@ -143,7 +159,7 @@ export function createGoogleAnalyticsProvider(config: GoogleAnalyticsConfig = {}
 
   return {
     name: 'google-analytics',
-    async getDashboardData(period: string = '7d', comparison?: ComparisonData): Promise<DashboardData | null> {
+    async getDashboardData(period: string = '7d', _comparison?: ComparisonData): Promise<DashboardData | null> {
       try {
         const dateRanges = getGA4DateRange(period)
 
@@ -198,7 +214,7 @@ export function createGoogleAnalyticsProvider(config: GoogleAnalyticsConfig = {}
         const timeseriesData = GA4ResponseSchema.safeParse(timeseriesResponse)
         const timeseries = timeseriesData.success && timeseriesData.data.rows
           ? timeseriesData.data.rows.map(row => ({
-              date: row.dimensionValues[0]?.value || '',
+              date: toISODate(row.dimensionValues[0]?.value || ''),
               visitors: parseMetricValue(row.metricValues[0]?.value || '0'),
               pageviews: parseMetricValue(row.metricValues[1]?.value || '0'),
             }))
@@ -262,16 +278,19 @@ export function createGoogleAnalyticsProvider(config: GoogleAnalyticsConfig = {}
           ],
           limit: 10,
           orderBys: [{ metric: { metricName: 'eventCount' }, desc: true }],
+          // FilterExpression fields are mutually exclusive; notExpression wraps a
+          // nested FilterExpression to negate it.
           dimensionFilter: {
-            filter: {
-              fieldName: 'eventName',
-              stringFilter: {
-                matchType: 'EXACT',
-                value: 'page_view',
-                caseSensitive: false,
+            notExpression: {
+              filter: {
+                fieldName: 'eventName',
+                stringFilter: {
+                  matchType: 'EXACT',
+                  value: 'page_view',
+                  caseSensitive: false,
+                },
               },
             },
-            notExpression: true,
           },
         })
 
@@ -330,7 +349,7 @@ export function createGoogleAnalyticsProvider(config: GoogleAnalyticsConfig = {}
         return null
       }
     },
-    trackEvent(eventName: string, props?: Record<string, any>) {
+    trackEvent(eventName: string, props?: Record<string, unknown>) {
       // Client-side tracking would use gtag
       console.log('Google Analytics trackEvent:', eventName, props)
     },

@@ -1,19 +1,36 @@
 import React from 'react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { AnalyticsWidget } from '@/components/AnalyticsWidget'
 import { createMockDashboardData } from '../../utils/test-helpers'
 
-// Mock fetch
-global.fetch = vi.fn()
+const jsonResponse = (body: unknown) =>
+  new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
+
+const fetchMock = vi.fn<typeof fetch>()
+
+// Globals AnalyticsView injects before AnalyticsWidget mounts
+type AnalyticsWidgetTestWindow = Window & {
+  __analyticsExternalDashboardUrl?: string
+  __analyticsExternalDashboardLinkText?: string
+  __analyticsShowExternalLink?: boolean
+  __payloadConfig?: { routes?: { api?: string } }
+}
 
 describe('AnalyticsWidget', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    ;(global.fetch as any).mockResolvedValue({
-      ok: true,
-      json: async () => createMockDashboardData(),
-    })
+    fetchMock.mockReset()
+    fetchMock.mockImplementation(async () => jsonResponse(createMockDashboardData()))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    const widgetWindow = window as AnalyticsWidgetTestWindow
+    delete widgetWindow.__analyticsExternalDashboardUrl
+    delete widgetWindow.__analyticsExternalDashboardLinkText
+    delete widgetWindow.__analyticsShowExternalLink
+    delete widgetWindow.__payloadConfig
   })
 
   it('should render widget with analytics data', async () => {
@@ -44,7 +61,7 @@ describe('AnalyticsWidget', () => {
   })
 
   it('should handle error state by rendering nothing', async () => {
-    ;(global.fetch as any).mockRejectedValueOnce(new Error('API Error'))
+    fetchMock.mockRejectedValueOnce(new Error('API Error'))
 
     const { container } = render(<AnalyticsWidget />)
 
@@ -65,15 +82,15 @@ describe('AnalyticsWidget', () => {
     render(<AnalyticsWidget />)
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith('/api/analytics/dashboard?period=day')
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/analytics/dashboard?period=day',
+        expect.objectContaining({ credentials: 'same-origin' }),
+      )
     })
   })
 
   it('should handle empty data by rendering nothing', async () => {
-    ;(global.fetch as any).mockResolvedValueOnce({
-      ok: true,
-      json: async () => null,
-    })
+    fetchMock.mockResolvedValueOnce(jsonResponse(null))
 
     const { container } = render(<AnalyticsWidget />)
 
@@ -90,14 +107,12 @@ describe('AnalyticsWidget', () => {
     })
   })
 
-  it('should not display real-time visitors if not available', async () => {
+  it('should display zero real-time visitors if not available', async () => {
+    // The live counter always renders (commit 6b47e7b), falling back to 0
     const dataWithoutRealtime = createMockDashboardData()
     delete dataWithoutRealtime.realtime
-    
-    ;(global.fetch as any).mockResolvedValueOnce({
-      ok: true,
-      json: async () => dataWithoutRealtime,
-    })
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(dataWithoutRealtime))
 
     render(<AnalyticsWidget />)
 
@@ -105,6 +120,93 @@ describe('AnalyticsWidget', () => {
       expect(screen.getByText('1.2K')).toBeInTheDocument()
     })
 
-    expect(screen.queryByText(/visitors online/)).not.toBeInTheDocument()
+    expect(screen.getByText('0 visitors online now')).toBeInTheDocument()
+    expect(screen.queryByText('42 visitors online now')).not.toBeInTheDocument()
+  })
+
+  it('should link to the configured external dashboard with its link text', async () => {
+    Object.assign(window as AnalyticsWidgetTestWindow, {
+      __analyticsExternalDashboardUrl: 'https://plausible.io/example.com',
+      __analyticsExternalDashboardLinkText: 'Open Plausible',
+    })
+
+    render(<AnalyticsWidget />)
+
+    const link = await screen.findByRole('link', { name: 'Open Plausible' })
+    expect(link).toHaveAttribute('href', 'https://plausible.io/example.com')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('should fall back to the default link text', async () => {
+    ;(window as AnalyticsWidgetTestWindow).__analyticsExternalDashboardUrl = 'https://plausible.io/example.com'
+
+    render(<AnalyticsWidget />)
+
+    expect(await screen.findByRole('link', { name: 'View in Dashboard' })).toHaveAttribute(
+      'href',
+      'https://plausible.io/example.com',
+    )
+  })
+
+  it('should hide the external link when it is switched off', async () => {
+    Object.assign(window as AnalyticsWidgetTestWindow, {
+      __analyticsExternalDashboardUrl: 'https://plausible.io/example.com',
+      __analyticsShowExternalLink: false,
+    })
+
+    render(<AnalyticsWidget />)
+
+    await screen.findByText("Today's Analytics")
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('should render no link when no external dashboard URL is configured', async () => {
+    render(<AnalyticsWidget />)
+
+    await screen.findByText("Today's Analytics")
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('should fetch from the configured Payload API route', async () => {
+    ;(window as AnalyticsWidgetTestWindow).__payloadConfig = { routes: { api: '/cms-api' } }
+
+    render(<AnalyticsWidget />)
+
+    await screen.findByText("Today's Analytics")
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/cms-api/analytics/dashboard?period=day',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    )
+  })
+
+  it('should use the singular for one visitor and mark the live dot active', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(createMockDashboardData({ realtime: { visitors: 1 } })))
+
+    render(<AnalyticsWidget />)
+
+    const heading = await screen.findByText('1 visitor online now')
+    const dot = heading.querySelector('span')
+    expect(dot).toHaveStyle({ backgroundColor: '#10b981' })
+  })
+
+  it('should grey out the live dot when nobody is online', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(createMockDashboardData({ realtime: { visitors: 0 } })))
+
+    render(<AnalyticsWidget />)
+
+    const heading = await screen.findByText('0 visitors online now')
+    expect(heading.querySelector('span')).toHaveStyle({ backgroundColor: '#6b7280' })
+  })
+
+  it('should show zeros for metrics missing from the stats', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ stats: {} }))
+
+    render(<AnalyticsWidget />)
+
+    await screen.findByText("Today's Analytics")
+    expect(screen.getAllByText('0')).toHaveLength(2) // Visitors and Pageviews
+    expect(screen.getByText('0%')).toBeInTheDocument() // Bounce rate
+    expect(screen.getByText('0s')).toBeInTheDocument() // Avg duration
   })
 })

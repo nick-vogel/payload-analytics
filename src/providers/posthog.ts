@@ -19,30 +19,31 @@ const PostHogTrendsSchema = z.object({
   ),
 })
 
-const PostHogPersonsSchema = z.object({
-  results: z.array(
-    z.object({
-      distinct_ids: z.array(z.string()),
-      properties: z.record(z.any()).optional(),
-    })
-  ),
-  next: z.string().nullable(),
-})
+// Shapes of the unvalidated responses, as the code below reads them
+interface PostHogResultsResponse<T> {
+  results?: T[]
+}
 
-const PostHogEventsSchema = z.object({
-  results: z.array(
-    z.object({
-      event: z.string(),
-      count: z.number(),
-    })
-  ),
-})
+interface PostHogPathResult {
+  path?: string
+  count?: number
+}
+
+interface PostHogReferrerResult {
+  label?: string
+  count?: number
+}
+
+interface PostHogEventResult {
+  event: string
+  count: number
+}
 
 async function fetchPostHogAPI(
   endpoint: string,
   config: Required<PostHogConfig>,
-  params: Record<string, any> = {}
-): Promise<any> {
+  params: Record<string, unknown> = {}
+): Promise<unknown> {
   const { apiKey, projectId, apiHost } = config
 
   if (!apiKey || !projectId) {
@@ -135,7 +136,7 @@ export function createPostHogProvider(config: PostHogConfig = {}): AnalyticsProv
 
   return {
     name: 'posthog',
-    async getDashboardData(period: string = '7d', comparison?: ComparisonData): Promise<DashboardData | null> {
+    async getDashboardData(period: string = '7d', _comparison?: ComparisonData): Promise<DashboardData | null> {
       try {
         const dateRange = getPostHogDateRange(period)
 
@@ -240,7 +241,7 @@ export function createPostHogProvider(config: PostHogConfig = {}): AnalyticsProv
         })) || []
 
         // Format pages data (from paths if available)
-        const pages = pathsData?.results?.slice(0, 10).map((path: any) => ({
+        const pages = (pathsData as PostHogResultsResponse<PostHogPathResult> | null)?.results?.slice(0, 10).map((path) => ({
           page: path.path || '/',
           visitors: path.count || 0,
           pageviews: path.count || 0,
@@ -249,7 +250,7 @@ export function createPostHogProvider(config: PostHogConfig = {}): AnalyticsProv
         })) || []
 
         // Format sources data
-        const sources = referrersData?.results?.slice(0, 10).map((ref: any) => ({
+        const sources = (referrersData as PostHogResultsResponse<PostHogReferrerResult> | null)?.results?.slice(0, 10).map((ref) => ({
           source: ref.label || 'Direct',
           visitors: ref.count || 0,
           bounce_rate: bounceRate,
@@ -257,7 +258,7 @@ export function createPostHogProvider(config: PostHogConfig = {}): AnalyticsProv
         })) || []
 
         // Format events data
-        const events = eventsData?.results?.map((event: any) => ({
+        const events = (eventsData as PostHogResultsResponse<PostHogEventResult> | null)?.results?.map((event) => ({
           goal: event.event,
           visitors: event.count || 0,
           events: event.count || 0,
@@ -300,7 +301,7 @@ export function createPostHogProvider(config: PostHogConfig = {}): AnalyticsProv
         return null
       }
     },
-    trackEvent(eventName: string, props?: Record<string, any>) {
+    trackEvent(eventName: string, props?: Record<string, unknown>) {
       // Client-side tracking would be implemented here
       // This is just a placeholder as tracking is typically done client-side
       console.log('PostHog trackEvent:', eventName, props)

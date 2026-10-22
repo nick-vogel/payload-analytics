@@ -2,12 +2,19 @@
 
 import React, { useEffect, useState } from 'react'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
-import { formatNumber, formatDuration, formatPercentage, formatChange, formatAxisDate, formatTooltipDate } from '../lib/formatters'
+import { formatNumber, formatDuration, formatPercentage, formatAxisDate, formatTooltipDate } from '../lib/formatters'
 import type { DashboardData, TimePeriod, ComparisonData } from '../types'
 import { TIME_PERIOD_LABELS } from '../constants'
 import {SelectInput} from "@payloadcms/ui";
 import { ComparisonSelector } from './ComparisonSelector'
-import { ExternalLink } from './ExternalLink'
+
+// Globals that AnalyticsView injects into the page before this client component mounts
+type AnalyticsWindow = Window & {
+  __analyticsTimePeriods?: TimePeriod[]
+  __analyticsDefaultTimePeriod?: TimePeriod
+  __analyticsEnableComparison?: boolean
+  __payloadConfig?: { routes?: { api?: string } }
+}
 
 export const AnalyticsClient: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null)
@@ -19,21 +26,20 @@ export const AnalyticsClient: React.FC = () => {
   const [timePeriods, setTimePeriods] = useState<TimePeriod[]>(['day', '7d', '30d', '12mo'])
   const [defaultTimePeriod, setDefaultTimePeriod] = useState<TimePeriod>('7d')
   const [enableComparison, setEnableComparison] = useState<boolean>(true)
-  const [externalUrl, setExternalUrl] = useState<string | null>(null)
-  const [externalLinkText, setExternalLinkText] = useState<string>('View in Dashboard')
-  const [showExternalLink, setShowExternalLink] = useState<boolean>(true)
   
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setTimePeriods((window as any).__analyticsTimePeriods || ['day', '7d', '30d', '12mo'])
-      setDefaultTimePeriod((window as any).__analyticsDefaultTimePeriod || '7d')
-      setEnableComparison((window as any).__analyticsEnableComparison !== false)
-      setExternalUrl((window as any).__analyticsExternalDashboardUrl || null)
-      setExternalLinkText((window as any).__analyticsExternalDashboardLinkText || 'View in Dashboard')
-      setShowExternalLink((window as any).__analyticsShowExternalLink !== false)
+      const analyticsWindow = window as AnalyticsWindow
+      setTimePeriods(analyticsWindow.__analyticsTimePeriods || ['day', '7d', '30d', '12mo'])
+      const configuredDefault = analyticsWindow.__analyticsDefaultTimePeriod || '7d'
+      setDefaultTimePeriod(configuredDefault)
+      setPeriod(configuredDefault)
+      setEnableComparison(analyticsWindow.__analyticsEnableComparison !== false)
     }
+    setConfigReady(true)
   }, [])
   
+  const [configReady, setConfigReady] = useState(false)
   const [period, setPeriod] = useState<TimePeriod>(defaultTimePeriod)
   const [showCustomDatePicker, setShowCustomDatePicker] = useState(false)
   const [customStartDate, setCustomStartDate] = useState('')
@@ -50,7 +56,7 @@ export const AnalyticsClient: React.FC = () => {
       }
       try {
         // Get the API route from the config
-        const apiRoute = (window as any).__payloadConfig?.routes?.api || '/api'
+        const apiRoute = (window as AnalyticsWindow).__payloadConfig?.routes?.api || '/api'
         let url = `${apiRoute}/analytics/dashboard?period=${period}`
         if (period === 'custom' && customStartDate && customEndDate) {
           url = `${apiRoute}/analytics/dashboard?period=custom&start=${customStartDate}&end=${customEndDate}`
@@ -83,10 +89,11 @@ export const AnalyticsClient: React.FC = () => {
       }
     }
 
-    if (period !== 'custom') {
+    // Wait for the configured default period, so the first fetch is not for the fallback
+    if (configReady && period !== 'custom') {
       fetchData()
     }
-  }, [period, comparison])
+  }, [configReady, period, comparison])
 
   // Add custom styles for analytics
   useEffect(() => {
@@ -400,7 +407,7 @@ export const AnalyticsClient: React.FC = () => {
                    (comparison.customStartDate && comparison.customEndDate))) {
                 setIsTransitioning(true)
                 try {
-                  const apiRoute = (window as any).__payloadConfig?.routes?.api || '/api'
+                  const apiRoute = (window as AnalyticsWindow).__payloadConfig?.routes?.api || '/api'
                   let url = `${apiRoute}/analytics/dashboard?period=custom&start=${customStartDate}&end=${customEndDate}`
                   
                   // Add comparison parameters
@@ -583,7 +590,7 @@ export const AnalyticsClient: React.FC = () => {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--theme-elevation-200)" />
                 <XAxis
                   dataKey="date"
-                  tickFormatter={(value, index) => formatAxisDate(value, period)}
+                  tickFormatter={(value) => formatAxisDate(value, period)}
                   stroke="var(--theme-text-light)"
                   style={{ fontSize: '0.75rem' }}
                   tick={{ fill: 'var(--theme-text)' }}

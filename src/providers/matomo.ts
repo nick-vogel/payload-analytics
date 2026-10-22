@@ -16,10 +16,12 @@ const MatomoVisitsSummarySchema = z.object({
   avg_time_on_site: z.number().optional(),
 })
 
+// Matomo only processes unique visitors for single-day periods by default, so
+// range-period rows omit nb_uniq_visitors; readers fall back to nb_visits.
 const MatomoPageSchema = z.object({
   label: z.string(),
   nb_visits: z.number(),
-  nb_uniq_visitors: z.number(),
+  nb_uniq_visitors: z.number().optional(),
   nb_hits: z.number(),
   bounce_rate: z.string().optional(),
   avg_time_on_page: z.number().optional(),
@@ -33,22 +35,29 @@ const MatomoReferrerSchema = z.object({
   avg_time_on_site: z.number().optional(),
 })
 
-const MatomoGoalSchema = z.object({
-  label: z.string(),
-  nb_conversions: z.number(),
-  nb_visits_converted: z.number(),
-  conversion_rate: z.string(), // e.g., "12.5%"
+// Goals.getGoals returns goal definitions (no conversion stats), e.g.
+// [{ idsite: 1, idgoal: 4, name: 'New Job Application', ... }].
+const MatomoGoalDefinitionSchema = z.object({
+  idgoal: z.union([z.number(), z.string()]),
+  name: z.string(),
 })
 
-const MatomoTimeSeriesSchema = z.record(z.string(), z.object({
-  nb_uniq_visitors: z.number().optional(),
-  nb_visits: z.number().optional(),
-  nb_actions: z.number().optional(),
+// Goals.get with showAllGoalSpecificMetrics=1 returns one flat object with
+// per-goal columns: goal_<idgoal>_nb_conversions, goal_<idgoal>_conversion_rate, ...
+const MatomoGoalMetricsSchema = z.record(z.string(), z.union([z.number(), z.string()]))
+
+// VisitsSummary.getVisits returns a date-to-visits map, e.g. { '2024-01-01': 110 },
+// or { value: 110 } when a single date is requested.
+const MatomoTimeSeriesSchema = z.record(z.string(), z.number())
+
+// Live.getCounters returns a one-element array.
+const MatomoLiveCountersSchema = z.array(z.object({
+  visitors: z.number().optional(),
 }))
 
 async function fetchMatomoAPI<T>(
   config: MatomoConfig,
-  params: Record<string, any> = {},
+  params: Record<string, unknown> = {},
   schema: z.ZodSchema<T>
 ): Promise<T | null> {
   if (!config.apiToken || !config.siteId) {
@@ -99,8 +108,6 @@ async function fetchMatomoAPI<T>(
 }
 
 function getMatomoPeriod(period: string): { period: string; date: string } {
-  const today = new Date().toISOString().split('T')[0]
-  
   switch (period) {
     case 'day':
       return { period: 'day', date: 'today' }
@@ -120,6 +127,10 @@ function parsePercentage(value?: string): number {
   return parseFloat(value.replace('%', ''))
 }
 
+function visitorsOf(row: { nb_uniq_visitors?: number; nb_visits?: number } | null): number | undefined {
+  return row?.nb_uniq_visitors ?? row?.nb_visits
+}
+
 export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
   const apiConfig: MatomoConfig = {
     apiToken: config.apiToken || process.env.MATOMO_API_TOKEN,
@@ -130,7 +141,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
   return {
     name: 'matomo',
     
-    async getDashboardData(period: string = '7d', comparison?: ComparisonData): Promise<DashboardData | null> {
+    async getDashboardData(period: string = '7d', _comparison?: ComparisonData): Promise<DashboardData | null> {
       if (!apiConfig.apiToken || !apiConfig.siteId) {
         console.warn('Matomo API token or site ID is not configured')
         return null
@@ -146,7 +157,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
         }
 
         // Fetch current period data
-        const [currentStats, pages, referrers, goals, timeseries, liveVisitors] = await Promise.all([
+        const [currentStats, pages, referrers, goals, goalMetrics, timeseries, liveCounters] = await Promise.all([
           // Current period stats
           fetchMatomoAPI(apiConfig, {
             ...baseParams,
@@ -168,11 +179,17 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
             filter_limit: 10,
           }, z.array(MatomoReferrerSchema)),
           
-          // Goals
+          // Goal definitions (names)
+          fetchMatomoAPI(apiConfig, {
+            method: 'Goals.getGoals',
+          }, z.array(MatomoGoalDefinitionSchema)),
+
+          // Per-goal conversions for the period
           fetchMatomoAPI(apiConfig, {
             ...baseParams,
-            method: 'Goals.getGoals',
-          }, z.array(MatomoGoalSchema)).catch(() => []), // Goals might not be configured
+            method: 'Goals.get',
+            showAllGoalSpecificMetrics: 1,
+          }, MatomoGoalMetricsSchema),
           
           // Time series data
           fetchMatomoAPI(apiConfig, {
@@ -186,11 +203,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
           fetchMatomoAPI(apiConfig, {
             method: 'Live.getCounters',
             lastMinutes: 5,
-          }, z.object({ 
-            '0': z.object({ 
-              visitors: z.number().optional() 
-            }).optional() 
-          })).catch(() => null),
+          }, MatomoLiveCountersSchema),
         ])
 
         // Fetch previous period for comparison
@@ -215,17 +228,20 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
           return ((current - previous) / previous) * 100
         }
 
-        // Transform timeseries data
-        const timeseriesData = Object.entries(timeseries || {}).map(([date, data]) => ({
-          date: new Date(date).toISOString(),
-          visitors: data.nb_uniq_visitors || 0,
-          pageviews: data.nb_actions || 0,
-        }))
+        // Transform timeseries data. Skip keys that are not dates, such as the
+        // { value } shape Matomo returns for a single date.
+        const timeseriesData = Object.entries(timeseries || {})
+          .map(([date, visits]) => ({ date: new Date(date), visits }))
+          .filter(({ date }) => !Number.isNaN(date.getTime()))
+          .map(({ date, visits }) => ({
+            date: date.toISOString(),
+            visitors: visits,
+          }))
 
         // Transform pages data
         const pagesData = (pages || []).map(page => ({
           page: page.label,
-          visitors: page.nb_uniq_visitors,
+          visitors: visitorsOf(page) ?? 0,
           pageviews: page.nb_hits,
           bounce_rate: parsePercentage(page.bounce_rate),
           visit_duration: page.avg_time_on_page || 0,
@@ -240,18 +256,26 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
         }))
 
         // Transform goals to events
+        const goalNumber = (key: string): number => {
+          const value = goalMetrics?.[key]
+          return typeof value === 'number' ? value : 0
+        }
+        const goalRate = (key: string): number => {
+          const value = goalMetrics?.[key]
+          return typeof value === 'string' ? parsePercentage(value) : 0
+        }
         const events = (goals || []).map(goal => ({
-          goal: goal.label,
-          visitors: goal.nb_visits_converted,
-          events: goal.nb_conversions,
-          conversion_rate: parsePercentage(goal.conversion_rate),
+          goal: goal.name,
+          visitors: goalNumber(`goal_${goal.idgoal}_nb_visits_converted`),
+          events: goalNumber(`goal_${goal.idgoal}_nb_conversions`),
+          conversion_rate: goalRate(`goal_${goal.idgoal}_conversion_rate`),
         }))
 
         return {
           stats: {
             visitors: {
-              value: currentStats.nb_uniq_visitors || 0,
-              change: calculateChange(currentStats.nb_uniq_visitors, previousStats?.nb_uniq_visitors),
+              value: visitorsOf(currentStats) || 0,
+              change: calculateChange(visitorsOf(currentStats), visitorsOf(previousStats)),
             },
             pageviews: {
               value: currentStats.nb_actions || 0,
@@ -274,7 +298,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
           sources,
           events,
           realtime: {
-            visitors: liveVisitors?.['0']?.visitors || 0,
+            visitors: liveCounters?.[0]?.visitors || 0,
           },
         }
       } catch (error) {
@@ -283,7 +307,7 @@ export function createMatomoProvider(config: MatomoConfig): AnalyticsProvider {
       }
     },
 
-    trackEvent(eventName: string, props?: Record<string, any>) {
+    trackEvent(eventName: string, props?: Record<string, unknown>) {
       // This would be implemented on the client side using Matomo's tracking script
       console.log('Track event:', eventName, props)
     }
